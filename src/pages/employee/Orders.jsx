@@ -66,10 +66,19 @@ const Orders = () => {
                             </h4>
                             {order.items.map((item, idx) => (
                                 <div key={idx} className="flex justify-between items-center mb-2 bg-white p-2 rounded-lg border border-gray-200 shadow-sm">
-                                    <span className="font-medium text-gray-700">{item.menuItem.name}</span>
+                                    <div className="flex flex-col">
+                                        <span className="font-medium text-gray-700">{item.menuItem.name}</span>
+                                        {item.selectedSize && <span className="text-xs text-gray-500">{item.selectedSize}</span>}
+                                    </div>
                                     <div className="flex items-center gap-2">
                                         <span className="bg-gradient-to-r from-blue-100 to-blue-200 text-blue-800 px-2 py-1 rounded text-xs font-semibold">x{item.quantity}</span>
-                                        <span className="font-semibold text-gray-800">₱ {(item.menuItem.totalPrice * item.quantity).toFixed(2)}</span>
+                                        <span className="font-semibold text-gray-800">₱ {(() => {
+                                            let price = item.menuItem.totalPrice;
+                                            if (item.selectedSize && item.menuItem.sizes?.[item.selectedSize]) {
+                                                price = item.menuItem.sizes[item.selectedSize].totalPrice;
+                                            }
+                                            return (price * item.quantity).toFixed(2);
+                                        })()}</span>
                                     </div>
                                 </div>
                             ))}

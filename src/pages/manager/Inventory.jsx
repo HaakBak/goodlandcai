@@ -27,6 +27,12 @@ const InventoryPage = () => {
   const [showSupplierModal, setShowSupplierModal] = useState(false);
   const [supplierName, setSupplierName] = useState('');
   const [supplierEmail, setSupplierEmail] = useState('');
+  const [supplierPhone, setSupplierPhone] = useState('');
+  const [supplierAddress, setSupplierAddress] = useState('');
+  const [currentSupplier, setCurrentSupplier] = useState(null);
+  const [showSupplierItemsModal, setShowSupplierItemsModal] = useState(false);
+  const [selectedItemForSupplier, setSelectedItemForSupplier] = useState(null);
+  const [notificationMessage, setNotificationMessage] = useState('');
 
   const [addItemData, setAddItemData] = useState({
     name: '',
@@ -81,13 +87,90 @@ const InventoryPage = () => {
       setSupplierEmail('');
       return;
     }
-    const newSupplier = { id: crypto.randomUUID(), name: supplierName, email: supplierEmail };
-    const updated = [...suppliers, newSupplier];
+    // Validate phone - only numbers allowed
+    if (!/^\d+$/.test(supplierPhone.replace(/[^0-9]/g, ''))) {
+      alert('Phone number must contain only numbers');
+      return;
+    }
+
+    let updated;
+    if (currentSupplier) {
+      // Edit existing supplier
+      updated = suppliers.map(sup =>
+        sup.id === currentSupplier.id
+          ? { ...sup, name: supplierName, email: supplierEmail, phone: supplierPhone, address: supplierAddress }
+          : sup
+      );
+    } else {
+      // Create new supplier
+      const newSupplier = { id: crypto.randomUUID(), name: supplierName, email: supplierEmail, phone: supplierPhone, address: supplierAddress, items: [] };
+      updated = [...suppliers, newSupplier];
+    }
+
     await saveSuppliers(updated);
     setSuppliers(updated);
     setShowSupplierModal(false);
+    setCurrentSupplier(null);
     setSupplierName('');
     setSupplierEmail('');
+    setSupplierPhone('');
+    setSupplierAddress('');
+  };
+
+  const handleDeleteSupplier = async (supplierId) => {
+    if (window.confirm('Are you sure you want to delete this supplier? Items assigned to this supplier will not be deleted.')) {
+      const updated = suppliers.filter(sup => sup.id !== supplierId);
+      await saveSuppliers(updated);
+      setSuppliers(updated);
+      setCurrentSupplier(null);
+    }
+  };
+
+  const handleAddItemToSupplier = async () => {
+    if (!selectedItemForSupplier || !currentSupplier) return;
+    
+    // Check if item is already assigned to another supplier
+    const itemAlreadyAssigned = suppliers.some(
+      sup => sup.id !== currentSupplier.id && sup.items?.includes(selectedItemForSupplier)
+    );
+    
+    if (itemAlreadyAssigned) {
+      setNotificationMessage('This item is already assigned to another supplier');
+      setTimeout(() => setNotificationMessage(''), 2000);
+      return;
+    }
+    
+    // Check if already in current supplier's items
+    if (currentSupplier.items?.includes(selectedItemForSupplier)) {
+      setNotificationMessage('This item is already assigned to this supplier');
+      setTimeout(() => setNotificationMessage(''), 2000);
+      return;
+    }
+    
+    const updatedSuppliers = suppliers.map(sup => 
+      sup.id === currentSupplier.id 
+        ? { ...sup, items: [...(sup.items || []), selectedItemForSupplier] }
+        : sup
+    );
+    
+    await saveSuppliers(updatedSuppliers);
+    setSuppliers(updatedSuppliers);
+    setCurrentSupplier(updatedSuppliers.find(s => s.id === currentSupplier.id));
+    setSelectedItemForSupplier(null);
+  };
+
+  const handleRemoveItemFromSupplier = async (itemId) => {
+    if (!currentSupplier) return;
+    
+    const updatedSuppliers = suppliers.map(sup => 
+      sup.id === currentSupplier.id 
+        ? { ...sup, items: sup.items.filter(id => id !== itemId) }
+        : sup
+    );
+    
+    await saveSuppliers(updatedSuppliers);
+    setSuppliers(updatedSuppliers);
+    setCurrentSupplier(updatedSuppliers.find(s => s.id === currentSupplier.id));
   };
 
   const handleAddItemChange = (e) => {
@@ -224,6 +307,8 @@ const InventoryPage = () => {
     .sort((a, b) => {
       if (sortOrder === 'most') return b.inStock - a.inStock;
       if (sortOrder === 'least') return a.inStock - b.inStock;
+      if (sortOrder === 'newest') return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      if (sortOrder === 'oldest') return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
       return 0;
     });
 
@@ -232,6 +317,8 @@ const InventoryPage = () => {
     .sort((a, b) => {
       if (sortOrder === 'most') return b.openStock - a.openStock;
       if (sortOrder === 'least') return a.openStock - b.openStock;
+      if (sortOrder === 'newest') return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      if (sortOrder === 'oldest') return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
       return 0;
     });
 
@@ -250,8 +337,7 @@ const InventoryPage = () => {
 
   const modalInventoryList = inventory.filter(
     (i) =>
-      i.name.toLowerCase().includes(recipeSearch.toLowerCase()) &&
-      i.type !== 'Not Food'
+      i.name.toLowerCase().includes(recipeSearch.toLowerCase()) 
   );
 
   const editInventoryList = inventory.filter((i) =>
@@ -343,6 +429,8 @@ const InventoryPage = () => {
                 <option value="least">
                   Least {inventorySubTab === 'General' ? 'Stock' : 'Quantity'}
                 </option>
+                <option value="newest">Newest to Oldest</option>
+                <option value="oldest">Oldest to Newest</option>
               </select>
             </div>
           </div>
@@ -358,6 +446,7 @@ const InventoryPage = () => {
                     <th className="px-6 py-4 text-center font-semibold text-gray-700">Amount per Pack</th>
                     <th className="px-6 py-4 text-center font-semibold text-gray-700">Unit Cost</th>
                     <th className="px-6 py-4 font-semibold text-gray-700">Type</th>
+                    <th className="px-6 py-4 font-semibold text-gray-700">Suppliers</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -381,6 +470,14 @@ const InventoryPage = () => {
                       <td className="px-6 py-4">
                         <span className="inline-block px-3 py-2 text-xs font-semibold rounded-full bg-gray-100 text-gray-700">
                           {item.type}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className="text-sm text-gray-700">
+                          {suppliers
+                            .filter(sup => sup.items?.includes(item.id))
+                            .map(sup => sup.name)
+                            .join(', ') || 'NA'}
                         </span>
                       </td>
                     </tr>
@@ -472,19 +569,60 @@ const InventoryPage = () => {
 
       {activeTab === 'Suppliers' && (
         <div className="relative">
-          <div className="flex flex-wrap gap-6">
+          <div className="flex flex-wrap gap-6 mb-6">
             {suppliers.map((sup) => (
               <div
                 key={sup.id}
-                className="w-72 h-44 border rounded-2xl p-6 flex flex-col justify-between bg-white shadow-lg hover:shadow-xl transition-all duration-300"
+                className="w-72 border rounded-2xl p-6 flex flex-col justify-between bg-white shadow-lg hover:shadow-xl transition-all duration-300"
               >
-                <div className="text-center font-semibold text-lg">{sup.name}</div>
-                <div className="text-sm text-gray-600 break-words">Email: {sup.email}</div>
+                <div>
+                  <div className="text-center font-semibold text-lg mb-2">{sup.name}</div>
+                  <div className="text-sm text-gray-600 mb-2"><strong>Email:</strong> {sup.email}</div>
+                  <div className="text-sm text-gray-600 mb-2"><strong>Phone:</strong> {sup.phone}</div>
+                  <div className="text-sm text-gray-600 mb-4"><strong>Location:</strong> {sup.address}</div>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      setCurrentSupplier(sup);
+                      setShowSupplierItemsModal(true);
+                    }}
+                    className="flex-1 bg-blue-500 hover:bg-blue-600 text-white py-2 px-3 rounded-lg text-sm font-semibold transition-all"
+                  >
+                    Items
+                  </button>
+                  <button
+                    onClick={() => {
+                      setCurrentSupplier(sup);
+                      setSupplierName(sup.name);
+                      setSupplierEmail(sup.email);
+                      setSupplierPhone(sup.phone);
+                      setSupplierAddress(sup.address);
+                      setShowSupplierModal(true);
+                    }}
+                    className="flex-1 bg-green-500 hover:bg-green-600 text-white py-2 px-3 rounded-lg text-sm font-semibold transition-all"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => handleDeleteSupplier(sup.id)}
+                    className="flex-1 bg-red-500 hover:bg-red-600 text-white py-2 px-3 rounded-lg text-sm font-semibold transition-all"
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
             ))}
 
             <button
-              onClick={() => setShowSupplierModal(true)}
+              onClick={() => {
+                setCurrentSupplier(null);
+                setSupplierName('');
+                setSupplierEmail('');
+                setSupplierPhone('');
+                setSupplierAddress('');
+                setShowSupplierModal(true);
+              }}
               className="w-20 h-20 rounded-full bg-blue-600 text-white text-3xl flex items-center justify-center self-center shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110"
             >
               +
@@ -598,7 +736,7 @@ const InventoryPage = () => {
               </div>
             </div>
           </div>
-
+          {/* Edit Inventory Item Section */}
           <div className="w-full max-w-5xl mx-auto">
             <h2 className="text-2xl font-semibold mb-6 text-center">Edit Inventory Item</h2>
             <div className="border rounded-xl p-8 bg-white shadow-lg flex flex-col md:flex-row gap-8 h-[500px]">
@@ -810,31 +948,70 @@ const InventoryPage = () => {
 
       {showSupplierModal && (
         <div className="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50">
-          <div className="bg-white p-6 rounded-xl w-80 border shadow relative">
-            <h3 className="text-lg mb-2 font-semibold">Name of Company</h3>
+          <div className="bg-white p-6 rounded-xl w-96 border shadow relative">
+            <h3 className="text-lg mb-4 font-semibold text-center">{currentSupplier ? 'Edit Supplier' : 'Add New Supplier'}</h3>
+            <h3 className="text-lg mb-2 font-semibold">Company Name</h3>
             <input
               className="w-full p-2 mb-3 border rounded text-sm"
               value={supplierName}
               onChange={(e) => setSupplierName(e.target.value)}
-              placeholder="Santos Co."
+              placeholder="e.g. Santos Co."
             />
-            <h3 className="text-lg mb-2 font-semibold">Email Info:</h3>
+            <h3 className="text-lg mb-2 font-semibold">Email</h3>
             <input
-              className="w-full p-2 mb-4 border rounded text-sm"
+              className="w-full p-2 mb-3 border rounded text-sm"
               value={supplierEmail}
               onChange={(e) => setSupplierEmail(e.target.value)}
-              placeholder="santos@gmail.com"
+              placeholder="e.g. santos@gmail.com"
             />
-            <div className="flex justify-center">
+            <h3 className="text-lg mb-2 font-semibold">Contact Number</h3>
+            <input
+              className="w-full p-2 mb-3 border rounded text-sm"
+              value={supplierPhone}
+              onChange={(e) => {
+                // Only allow numbers and common phone formatting characters
+                const value = e.target.value.replace(/[^\d\-\(\)\s]/g, '');
+                setSupplierPhone(value);
+              }}
+              placeholder="e.g. (639) 123-4567"
+            />
+            <h3 className="text-lg mb-2 font-semibold">Location</h3>
+            <input
+              className="w-full p-2 mb-4 border rounded text-sm"
+              value={supplierAddress}
+              onChange={(e) => setSupplierAddress(e.target.value)}
+              placeholder="e.g. Makati, Metro Manila"
+            />
+            <div className="flex justify-center gap-2">
+              <button
+                onClick={() => {
+                  setShowSupplierModal(false);
+                  setCurrentSupplier(null);
+                  setSupplierName('');
+                  setSupplierEmail('');
+                  setSupplierPhone('');
+                  setSupplierAddress('');
+                }}
+                className="px-6 py-2 bg-gray-300 text-gray-700 rounded text-sm font-semibold hover:bg-gray-400 transition-all"
+              >
+                Cancel
+              </button>
               <button
                 onClick={handleAddSupplier}
-                className="px-6 py-2 bg-blue-600 text-white rounded text-sm font-semibold"
+                className="px-6 py-2 bg-blue-600 text-white rounded text-sm font-semibold hover:bg-blue-700 transition-all"
               >
-                Confirm
+                {currentSupplier ? 'Update' : 'Add Supplier'}
               </button>
             </div>
             <button
-              onClick={() => setShowSupplierModal(false)}
+              onClick={() => {
+                setShowSupplierModal(false);
+                setCurrentSupplier(null);
+                setSupplierName('');
+                setSupplierEmail('');
+                setSupplierPhone('');
+                setSupplierAddress('');
+              }}
               className="absolute top-2 right-4 text-lg"
             >
               ×
@@ -963,6 +1140,74 @@ const InventoryPage = () => {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Supplier Items Modal */}
+      {showSupplierItemsModal && currentSupplier && (
+        <div className="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50 p-4">
+          <div className="bg-white p-6 rounded-xl w-full max-w-md shadow-xl">
+            <h3 className="text-xl font-semibold mb-4">{currentSupplier.name} - Items</h3>
+            
+            <div className="mb-4">
+              <label className="block text-sm font-semibold mb-2">Add Item to Supplier</label>
+              <select
+                value={selectedItemForSupplier || ''}
+                onChange={(e) => setSelectedItemForSupplier(e.target.value || null)}
+                className="w-full p-2 border rounded-lg mb-2"
+              >
+                <option value="">Select an item...</option>
+                {inventory.map(item => (
+                  <option key={item.id} value={item.id}>{item.name}</option>
+                ))}
+              </select>
+              <button
+                onClick={handleAddItemToSupplier}
+                disabled={!selectedItemForSupplier}
+                className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white py-2 px-4 rounded-lg font-semibold transition-all"
+              >
+                Add Item
+              </button>
+            </div>
+
+            <div className="border-t pt-4">
+              <h4 className="font-semibold mb-3">Current Items</h4>
+              {currentSupplier.items && currentSupplier.items.length > 0 ? (
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {currentSupplier.items.map(itemId => {
+                    const item = inventory.find(i => i.id === itemId);
+                    return (
+                      <div key={itemId} className="flex justify-between items-center bg-gray-100 p-2 rounded-lg">
+                        <span className="font-medium">{item?.name}</span>
+                        <button
+                          onClick={() => handleRemoveItemFromSupplier(itemId)}
+                          className="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-xs font-semibold transition-all"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-gray-500 text-sm">No items assigned yet</p>
+              )}
+            </div>
+
+            <button
+              onClick={() => setShowSupplierItemsModal(false)}
+              className="w-full mt-4 bg-gray-300 hover:bg-gray-400 text-gray-700 py-2 px-4 rounded-lg font-semibold transition-all"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Notification Popup */}
+      {notificationMessage && (
+        <div className="fixed top-4 right-4 bg-red-500 text-white px-6 py-3 rounded-lg shadow-lg z-[1000] animate-pulse">
+          {notificationMessage}
         </div>
       )}
     </div>

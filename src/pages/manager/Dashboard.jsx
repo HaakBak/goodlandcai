@@ -111,7 +111,8 @@ const Dashboard = () => {
                         </ResponsiveContainer>
                     </div>
                 </div>
-
+                
+                {/*Reconfigure Sales Forecasting by top sales based on amount of sold per day, month, year*/}
                 {/* Chart 2: Sales Forecasting (ESA) */}
                 <div className="border border-gray-200 p-6 rounded-2xl shadow-xl bg-white/80 backdrop-blur-sm hover:shadow-2xl transition-all duration-300 hover:scale-105">
                     <div className="flex justify-between items-center mb-6">

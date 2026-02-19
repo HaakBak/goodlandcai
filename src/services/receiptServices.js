@@ -48,7 +48,7 @@ export const generateReceiptPDF = async (transaction, businessInfo) => {
 
     // Dimensions in inches (5.5" x 8.5" Half Letter)
     const width = 5.5;
-    const height = 8.5;
+    const height = 10;
     
     const doc = new jsPDF({
       orientation: 'portrait',
@@ -250,8 +250,6 @@ export const generateReceiptPDF = async (transaction, businessInfo) => {
     currentY += 0.3;
     
     // Additional business info
-    centerText("Non-VAT Registered", currentY, 8);
-    currentY += 0.2;
     centerText("This serves as official receipt", currentY, 8);
     currentY += 0.3;
     

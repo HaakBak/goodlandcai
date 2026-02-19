@@ -5,7 +5,7 @@
  * 2. Sales Forecasting (Exponential Smoothing)
  */
 
-/**
+/** 
  * Calculates the top selling items for a specific category based on transaction history.
  * @param {Array} transactions - List of transactions from DB
  * @param {String} category - Category to filter by (e.g., 'Beverages')
@@ -82,3 +82,6 @@ export const calculateESA = (transactions, alpha = 0.3) => {
 
   return result;
 };
+
+
+//Revise entire model application

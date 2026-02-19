@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getMenu, saveTransaction, getTransactions, resetMenu, getBusinessInfo } from '../../services/mockDatabase';
+import { getMenu, saveTransaction, getTransactions, resetMenu, getBusinessInfo, getServiceFees } from '../../services/mockDatabase';
 import { generateReceiptPDF } from '../../services/receiptServices';
 import { useNavigate } from 'react-router-dom';
 
@@ -12,36 +12,42 @@ const POS = () => {
   const [paymentInput, setPaymentInput] = useState('');
   const [orderType, setOrderType] = useState('Dine In');
   const [discountType, setDiscountType] = useState('None'); // 'None', 'PWD', or 'Senior'
+  const [hoveredItemId, setHoveredItemId] = useState(null);
+  const [serviceFees, setServiceFees] = useState({ dineIn: 3, takeout: 5 });
   const navigate = useNavigate();
 
   useEffect(() => {
-    // Reset menu to ensure latest prices are loaded
+    // Reset menu to ensure latest prices are loaded and fetch service fees
     resetMenu().then(() => getMenu()).then(setMenu);
+    getServiceFees().then(setServiceFees);
   }, []);
 
-  const addToCart = (item) => {
+  const addToCart = (item, size = null) => {
     setCart(prev => {
-      const existing = prev.find(i => i.menuItem.id === item.id);
+      const existing = prev.find(i => i.menuItem.id === item.id && i.selectedSize === size);
       if (existing) {
-        return prev.map(i => i.menuItem.id === item.id ? { ...i, quantity: i.quantity + 1 } : i);
+        return prev.map(i => (i.menuItem.id === item.id && i.selectedSize === size) ? { ...i, quantity: i.quantity + 1 } : i);
       }
-      return [...prev, { menuItem: item, quantity: 1 }];
+      return [...prev, { menuItem: item, quantity: 1, selectedSize: size }];
     });
   };
+  
 
-  const removeFromCart = (itemId) => {
-    setCart(prev => prev.filter(i => i.menuItem.id !== itemId));
+  const removeFromCart = (itemId, selectedSize = null) => {
+    setCart(prev => prev.filter(i => !(i.menuItem.id === itemId && i.selectedSize === selectedSize)));
   };
 
-  const updateQuantity = (itemId, delta) => {
+  const updateQuantity = (itemId, delta, selectedSize = null) => {
     setCart(prev => {
-      return prev.map(i => {
-        if (i.menuItem.id === itemId) {
-          const newQ = i.quantity + delta;
-          return newQ > 0 ? { ...i, quantity: newQ } : i;
-        }
-        return i;
-      });
+      return prev
+        .map(i => {
+          if (i.menuItem.id === itemId && i.selectedSize === selectedSize) {
+            const newQ = i.quantity + delta;
+            return newQ > 0 ? { ...i, quantity: newQ } : null;
+          }
+          return i;
+        })
+        .filter(i => i !== null);
     });
   };
 
@@ -51,7 +57,15 @@ const POS = () => {
   );
 
   // Calculate totals based on totalPrice (VAT-inclusive price shown to customers)
-  const baseAmount = cart.reduce((sum, item) => sum + (item.menuItem.totalPrice * item.quantity), 0);
+  // Account for size-specific pricing
+  const baseAmount = cart.reduce((sum, item) => {
+    let itemPrice = item.menuItem.totalPrice;
+    // If item has a selected size, use the size-specific price
+    if (item.selectedSize && item.menuItem.sizes?.[item.selectedSize]) {
+      itemPrice = item.menuItem.sizes[item.selectedSize].totalPrice;
+    }
+    return sum + (itemPrice * item.quantity);
+  }, 0);
   
   // Calculate discount on the total (which already includes VAT)
   const hasDiscount = discountType !== 'None';
@@ -60,13 +74,21 @@ const POS = () => {
   
   // If customer has discount (PWD/Senior), they are exempted from VAT
   // So we subtract the VAT portion from the discounted amount
-  const vatPortion = hasDiscount ? cart.reduce((sum, item) => sum + (item.menuItem.VAT_fee * item.quantity), 0) : cart.reduce((sum, item) => sum + (item.menuItem.VAT_fee * item.quantity), 0);
+  const vatPortion = cart.reduce((sum, item) => {
+    let itemVAT = item.menuItem.VAT_fee;
+    // If item has a selected size, use the size-specific VAT
+    if (item.selectedSize && item.menuItem.sizes?.[item.selectedSize]) {
+      itemVAT = item.menuItem.sizes[item.selectedSize].VAT_fee;
+    }
+    return sum + (itemVAT * item.quantity);
+  }, 0);
   // Note: For regular customers, VAT is inside the total, so we display it but don't deduct it from the total payable.
-  // The logic in provided code: `amountAfterDiscount = hasDiscount ? (discountedAmount - vatPortion) : discountedAmount;` implies VAT exemption logic.
+  // For PWD/Senior customers, VAT is exempted, so we subtract it from the discounted amount
   const amountAfterDiscount = hasDiscount ? (discountedAmount - vatPortion) : discountedAmount;
   
-  // Service fee is fixed: 25 for Dine In, 50 for Takeout (only if cart has items)
-  const serviceFee = cart.length > 0 ? (orderType === 'Dine In' ? 25 : 50) : 0;
+  // Service fee is calculated as percentage of base amount (Dine In: serviceFees.dineIn%, Takeout: serviceFees.takeout%)
+  const serviceFeePercentage = orderType === 'Dine In' ? serviceFees.dineIn : serviceFees.takeout;
+  const serviceFee = cart.length > 0 ? (amountAfterDiscount * (serviceFeePercentage / 100)) : 0;
   const totalAmount = amountAfterDiscount + serviceFee;
   
   const change = paymentInput ? parseFloat(paymentInput) - totalAmount : 0;
@@ -227,29 +249,30 @@ const POS = () => {
                     </div>
                 ) : (
                     cart.map(item => (
-                        <div key={item.menuItem.id} className="flex justify-between items-center border border-slate-200 p-3 mb-3 rounded-lg bg-white shadow-sm hover:shadow-md transition-all duration-200">
+                        <div key={`${item.menuItem.id}-${item.selectedSize || 'default'}`} className="flex justify-between items-center border border-slate-200 p-3 mb-3 rounded-lg bg-white shadow-sm hover:shadow-md transition-all duration-200">
                             <div className="flex flex-col">
                                 <span className="font-medium text-slate-800">{item.menuItem.name}</span>
+                                {item.selectedSize && <span className="text-xs text-slate-500">{item.selectedSize}</span>}
                                 <span className="text-sm text-slate-600">₱ {item.menuItem.totalPrice}</span>
                             </div>
                             <div className="flex items-center gap-2">
                                 <span className="font-semibold text-base bg-white text-slate-700 px-2 py-1 rounded-md border border-slate-200">x{item.quantity}</span>
                                 <button 
-                                    onClick={() => updateQuantity(item.menuItem.id, 1)} 
+                                    onClick={() => updateQuantity(item.menuItem.id, 1, item.selectedSize)} 
                                     className="w-8 h-8 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition-colors duration-200 shadow-sm hover:shadow-md flex items-center justify-center font-medium text-xs"
                                     title="Add item"
                                 >
                                     ADD
                                 </button>
                                 <button 
-                                    onClick={() => updateQuantity(item.menuItem.id, -1)} 
+                                    onClick={() => updateQuantity(item.menuItem.id, -1, item.selectedSize)} 
                                     className="w-8 h-8 bg-amber-500 hover:bg-amber-600 text-white rounded-lg transition-colors duration-200 shadow-sm hover:shadow-md flex items-center justify-center font-medium text-xs"
                                     title="Remove item"
                                 >
                                     SUB
                                 </button>
                                 <button 
-                                    onClick={() => removeFromCart(item.menuItem.id)} 
+                                    onClick={() => removeFromCart(item.menuItem.id, item.selectedSize)} 
                                     className="w-8 h-8 bg-rose-500 hover:bg-rose-600 text-white rounded-lg transition-colors duration-200 shadow-sm hover:shadow-md flex items-center justify-center font-medium text-xs"
                                     title="Delete from cart"
                                 >
@@ -285,32 +308,70 @@ const POS = () => {
         <div className="w-2/3 p-6 bg-slate-50">
             <div className="mb-4">
                 <h2 className="text-xl font-semibold text-slate-800 mb-2">Menu Items</h2>
-                <p className="text-slate-600 text-sm">Click to add items to cart</p>
+                <p className="text-slate-600 text-sm">Click to add items to cart • Hover drinks for sizes</p>
             </div>
-            <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 overflow-y-auto h-full pb-24">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 overflow-y-auto h-full pb-24">
+                {filteredMenu.length > 0 ? filteredMenu.map(item => {
+                    const isFlipped = hoveredItemId === item.id && item.hasSizes;
+                    return (
+                        <div 
+                            key={item.id} 
+                            className="h-64 cursor-pointer"
+                            onMouseEnter={() => setHoveredItemId(item.id)}
+                            onMouseLeave={() => setHoveredItemId(null)}
+                        >
+                            <div className="relative w-full h-full transition-transform duration-500 transform-gpu" style={{
+                                transformStyle: 'preserve-3d',
+                                transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)'
+                            }}>
+                                {/* Front of Card */}
+                                <div 
+                                    className="absolute inset-0 bg-white rounded-2xl p-4 flex flex-col items-center justify-center shadow-md border border-slate-100 hover:shadow-lg transition-shadow"
+                                    style={{ backfaceVisibility: 'hidden' }}
+                                    onClick={() => !item.hasSizes && addToCart(item, null)}
+                                >
+                                    <h3 className="font-bold text-slate-800 text-center text-sm line-clamp-2">{item.name}</h3>
+                                    <p className="text-blue-600 font-bold mt-2 text-sm">₱ {item.totalPrice.toFixed(2)}</p>
+                                    {item.hasSizes && (
+                                        <span className="mt-2 text-[10px] uppercase font-black text-slate-400 tracking-widest">Cup Size</span>
+                                    )}
+                                </div>
 
-                {filteredMenu.length > 0 ? filteredMenu.map(item => (
-                    <div 
-                        key={item.id} 
-                        onClick={() => addToCart(item)}
-                        className="group bg-white border border-slate-200 h-32 flex flex-col items-center justify-center p-3 cursor-pointer hover:bg-slate-50 hover:border-slate-300 hover:shadow-lg transition-all duration-200 rounded-lg relative overflow-hidden"
-                    >
-                        <div className="absolute inset-0 bg-slate-50 opacity-0 group-hover:opacity-100 transition-opacity duration-200"></div>
-                        
-                        <div className="relative z-10 flex flex-col items-center text-center">
-                            <span className="font-medium text-slate-800 text-sm mb-1">{item.name}</span>
-                            <div className="bg-white text-slate-700 px-2 py-0.5 rounded-full text-xs font-medium border border-slate-200">
-                                ₱ {item.totalPrice}
+                                {/* Back of Card (Sizes) */}
+                                {item.hasSizes && (
+                                    <div 
+                                        className="absolute inset-0 bg-slate-900 rounded-2xl p-4 flex flex-col items-center justify-center text-white shadow-lg"
+                                        style={{
+                                            backfaceVisibility: 'hidden',
+                                            transform: 'rotateY(180deg)'
+                                        }}
+                                    >
+                                        <h3 className="font-bold text-xs mb-3 border-b border-slate-700 pb-2 w-full text-center truncate uppercase tracking-widest">
+                                            {item.name}
+                                        </h3>
+                                        <div className="grid grid-cols-1 gap-2 w-full flex-1 flex flex-col justify-center">
+                                            {item.sizes && Object.keys(item.sizes).map(size => (
+                                                <button 
+                                                    key={size} 
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        addToCart(item, size);
+                                                        setHoveredItemId(null);
+                                                    }} 
+                                                    className="w-full bg-slate-800 hover:bg-blue-600 py-2 rounded-lg text-[10px] font-black uppercase transition-all border border-slate-700 hover:border-blue-400 text-center"
+                                                >
+                                                    <div>{size}</div>
+                                                    <div className="text-[9px] font-normal">₱{item.sizes[size].totalPrice.toFixed(2)}</div>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </div>
-                        {cart.find(i => i.menuItem.id === item.id) && (
-                            <div className="absolute top-2 right-2 w-6 h-6 bg-white rounded-full flex items-center justify-center text-slate-800 text-xs font-medium shadow-md border border-slate-200">
-                                {cart.find(i => i.menuItem.id === item.id)?.quantity || 0}
-                            </div>
-                        )}
-                    </div>
-                )) : (
-                    <div className="col-span-3 flex flex-col items-center justify-center py-20 text-slate-400">
+                    );
+                }) : (
+                    <div className="col-span-5 flex flex-col items-center justify-center py-20 text-slate-400">
                         <svg className="w-24 h-24 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.172 16.172a4 4 0 015.656 0M9 12h6m-6-4h6m2 5.291A7.962 7.962 0 0112 15c-2.34 0-4.29-1.009-5.824-2.562M15 6.5a3 3 0 11-6 0 3 3 0 016 0z" />
                         </svg>
@@ -378,7 +439,7 @@ const POS = () => {
 
                         {/* Service Fee */}
                         <div className="flex justify-between text-sm mb-3">
-                            <span className="text-slate-600">Service Fee ({orderType === 'Dine In' ? 'Dine In: ₱ 25' : 'Takeout: ₱ 50'}):</span>
+                            <span className="text-slate-600">Service Fee ({orderType === 'Dine In' ? serviceFees.dineIn : serviceFees.takeout}%):</span>
                             <span className="font-semibold text-slate-800">₱ {serviceFee.toFixed(2)}</span>
                         </div>
 

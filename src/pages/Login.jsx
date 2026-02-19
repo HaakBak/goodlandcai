@@ -13,6 +13,7 @@ const Login = () => {
     navigate('/employee/pos');
   };
 
+  // Modify Login Security via MFA
   const handleManagerLogin = (e) => {
     e.preventDefault();
     // Simple mock auth
