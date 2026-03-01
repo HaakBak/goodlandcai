@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { getMenu, saveTransaction, getTransactions, resetMenu, getBusinessInfo, getServiceFees } from '../../services/mockDatabase';
+import { getMenu, saveTransaction, getTransactions, resetMenu, getBusinessInfo, getServiceFees, addHistoryLog } from '../../services/mockDatabase';
 import { generateReceiptPDF } from '../../services/receiptServices';
 import { useNavigate } from 'react-router-dom';
 
@@ -12,7 +12,6 @@ const POS = () => {
   const [paymentInput, setPaymentInput] = useState('');
   const [orderType, setOrderType] = useState('Dine In');
   const [discountType, setDiscountType] = useState('None'); // 'None', 'PWD', or 'Senior'
-  const [hoveredItemId, setHoveredItemId] = useState(null);
   const [serviceFees, setServiceFees] = useState({ dineIn: 3, takeout: 5 });
   const navigate = useNavigate();
 
@@ -174,7 +173,18 @@ const POS = () => {
         <div className="w-1/3 border-r border-slate-200 bg-white/90 backdrop-blur-sm p-6 flex flex-col shadow-lg">
             <div className="flex justify-between items-center mb-6">
                 <button 
-                    onClick={() => navigate('/')}
+                    onClick={() => {
+                      const now = new Date();
+                      addHistoryLog({
+                        type: 'Employee Logout',
+                        description: 'Employee logged out of POS system',
+                        user: 'Employee',
+                        timestamp: now.toISOString(),
+                        date: now.toISOString().split('T')[0],
+                        time: now.toTimeString().split(' ')[0]
+                      });
+                      navigate('/');
+                    }}
                     className="group flex items-center gap-2 px-3 py-1.5 bg-gradient-to-r from-slate-600 to-slate-700 text-white rounded-lg font-medium hover:from-slate-700 hover:to-slate-800 transition-all duration-300 shadow-sm hover:shadow-md text-sm"
                 >
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -312,62 +322,40 @@ const POS = () => {
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 overflow-y-auto h-full pb-24">
                 {filteredMenu.length > 0 ? filteredMenu.map(item => {
-                    const isFlipped = hoveredItemId === item.id && item.hasSizes;
                     return (
                         <div 
                             key={item.id} 
                             className="h-64 cursor-pointer"
-                            onMouseEnter={() => setHoveredItemId(item.id)}
-                            onMouseLeave={() => setHoveredItemId(null)}
                         >
-                            <div className="relative w-full h-full transition-transform duration-500 transform-gpu" style={{
-                                transformStyle: 'preserve-3d',
-                                transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)'
-                            }}>
-                                {/* Front of Card */}
+                            {/* Drinks with sizes - show back view with sizes */}
+                            {item.hasSizes ? (
+                                <div className="w-full h-full bg-white rounded-2xl p-4 flex flex-col items-center justify-center shadow-md border border-slate-100 hover:shadow-lg transition-shadow">
+                                    <h3 className="font-bold text-xs mb-3 border-b border-slate-200 pb-2 w-full text-center truncate uppercase tracking-widest text-slate-800">
+                                        {item.name}
+                                    </h3>
+                                    <div className="grid grid-cols-1 gap-2 w-full flex-1 flex flex-col justify-center">
+                                        {item.sizes && Object.keys(item.sizes).map(size => (
+                                            <button 
+                                                key={size} 
+                                                onClick={() => addToCart(item, size)}
+                                                className="w-full bg-green-600 hover:bg-green-500 py-2 rounded-lg text-[10px] font-black uppercase transition-all border border-green-700 hover:border-green-400 text-center text-white"
+                                            >
+                                                <div>{size}</div>
+                                                <div className="text-[9px] font-normal">₱{item.sizes[size].totalPrice.toFixed(2)}</div>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            ) : (
+                                /* Other items - show front view */
                                 <div 
-                                    className="absolute inset-0 bg-white rounded-2xl p-4 flex flex-col items-center justify-center shadow-md border border-slate-100 hover:shadow-lg transition-shadow"
-                                    style={{ backfaceVisibility: 'hidden' }}
-                                    onClick={() => !item.hasSizes && addToCart(item, null)}
+                                    className="w-full h-full bg-white rounded-2xl p-4 flex flex-col items-center justify-center shadow-md border border-slate-100 hover:shadow-lg transition-shadow"
+                                    onClick={() => addToCart(item, null)}
                                 >
                                     <h3 className="font-bold text-slate-800 text-center text-sm line-clamp-2">{item.name}</h3>
                                     <p className="text-blue-600 font-bold mt-2 text-sm">₱ {item.totalPrice.toFixed(2)}</p>
-                                    {item.hasSizes && (
-                                        <span className="mt-2 text-[10px] uppercase font-black text-slate-400 tracking-widest">Cup Size</span>
-                                    )}
                                 </div>
-
-                                {/* Back of Card (Sizes) */}
-                                {item.hasSizes && (
-                                    <div 
-                                        className="absolute inset-0 bg-slate-900 rounded-2xl p-4 flex flex-col items-center justify-center text-white shadow-lg"
-                                        style={{
-                                            backfaceVisibility: 'hidden',
-                                            transform: 'rotateY(180deg)'
-                                        }}
-                                    >
-                                        <h3 className="font-bold text-xs mb-3 border-b border-slate-700 pb-2 w-full text-center truncate uppercase tracking-widest">
-                                            {item.name}
-                                        </h3>
-                                        <div className="grid grid-cols-1 gap-2 w-full flex-1 flex flex-col justify-center">
-                                            {item.sizes && Object.keys(item.sizes).map(size => (
-                                                <button 
-                                                    key={size} 
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        addToCart(item, size);
-                                                        setHoveredItemId(null);
-                                                    }} 
-                                                    className="w-full bg-slate-800 hover:bg-blue-600 py-2 rounded-lg text-[10px] font-black uppercase transition-all border border-slate-700 hover:border-blue-400 text-center"
-                                                >
-                                                    <div>{size}</div>
-                                                    <div className="text-[9px] font-normal">₱{item.sizes[size].totalPrice.toFixed(2)}</div>
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
+                            )}
                         </div>
                     );
                 }) : (

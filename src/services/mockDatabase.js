@@ -115,7 +115,15 @@ const KEYS = {
   RECIPES: 'pos_recipes',
   USAGE_LOGS: 'pos_usage_logs',
   SERVICE_FEES: 'pos_service_fees',
+  USERS: 'pos_users',
+  HISTORY: 'pos_history',
 };
+
+const INITIAL_USERS = [
+  { id: 'admin-id', username: 'admin', email: 'admin@goodland.com', password: 'admin', role: 'admin' }
+];
+
+
 
 const getLocalStorage = (key, initial) => {
   const stored = localStorage.getItem(key);
@@ -127,6 +135,39 @@ const getLocalStorage = (key, initial) => {
 
 const setLocalStorage = (key, data) => {
   localStorage.setItem(key, JSON.stringify(data));
+};
+
+export const getUsers = async () => {
+  return Promise.resolve(getLocalStorage(KEYS.USERS, INITIAL_USERS));
+};
+
+export const saveUser = async (user) => {
+  const users = await getUsers();
+  users.push(user);
+  setLocalStorage(KEYS.USERS, users);
+};
+
+export const getHistory = async () => {
+  return Promise.resolve(getLocalStorage(KEYS.HISTORY, []));
+};
+
+export const addHistoryLog = async (log) => {
+  let history = await getHistory();
+  if (!Array.isArray(history)) {
+    history = [];
+  }
+  const now = new Date();
+  const logEntry = {
+    id: crypto.randomUUID(),
+    timestamp: log.timestamp || now.toISOString(),
+    date: log.date || now.toISOString().split('T')[0],
+    time: log.time || now.toTimeString().split(' ')[0],
+    type: log.type,
+    description: log.description,
+    user: log.user
+  };
+  history.unshift(logEntry);
+  setLocalStorage(KEYS.HISTORY, history);
 };
 
 export const getMenu = () => Promise.resolve(getLocalStorage(KEYS.MENU, INITIAL_MENU));

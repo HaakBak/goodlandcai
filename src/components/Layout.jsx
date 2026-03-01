@@ -1,23 +1,44 @@
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import BottomNav from './BottomNav';
 import NotificationToast from '../components/NotificationToast';
+import { getHistory } from '../services/mockDatabase';
 
 const Layout = () => {
   const location = useLocation();
   const isManager = location.pathname.includes('/manager');
   const isEmployee = location.pathname.includes('/employee');
+  const isAdmin = location.pathname.includes('/admin');
+  const [historyData, setHistoryData] = useState([]);
+  
   // POS-specific route path -> make POS full viewport height and non-scrollable
   const isEmployeePOS = location.pathname === '/employee/pos' || location.pathname.includes('/employee/pos');
+
+  useEffect(() => {
+    if (isAdmin) {
+      const loadHistory = async () => {
+        const data = await getHistory();
+        setHistoryData(Array.isArray(data) ? data : []);
+      };
+      loadHistory();
+    }
+  }, [isAdmin]);
 
   return (
     <div className="flex min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
       <NotificationToast />
 
-      {/* Manager: sidebar + main content with left margin */}
-      {isManager ? (
+      {/* Admin: sidebar + main content with left margin */}
+      {isAdmin ? (
+        <>
+          <Sidebar role="ADMIN" historyData={historyData} />
+          <div className="flex-1 ml-72 transition-all duration-300 ease-in-out h-screen">
+            <Outlet />
+          </div>
+        </>
+      ) : isManager ? (
         <>
           <Sidebar role="MANAGER" />
           <div className="flex-1 ml-64 transition-all duration-300 ease-in-out">

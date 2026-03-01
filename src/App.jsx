@@ -8,6 +8,7 @@ import Orders from './pages/employee/Orders';
 import Dashboard from './pages/manager/Dashboard';
 import InventoryPage from './pages/manager/Inventory';
 import POSM from './pages/manager/POSM';
+import AdminView from './pages/admin/AdminView';
 
 {/* Navigation between each pages */}
 function App() {
@@ -27,6 +28,12 @@ function App() {
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="inventory" element={<InventoryPage />} />
           <Route path="posm" element={<POSM />} />
+        </Route>
+
+        {/* Admin Routes */}
+        <Route path="/admin" element={<Layout />}>
+          <Route index element={<AdminView />} />
+          <Route path="history" element={<AdminView />} />
         </Route>
       </Routes>
     </BrowserRouter>

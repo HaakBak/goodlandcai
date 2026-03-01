@@ -1,32 +1,151 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { getUsers, saveUser, addHistoryLog } from '../services/mockDatabase';
+import { User as UserIcon, Lock, Mail, ArrowRight, } from 'lucide-react';
 import logo from '/src/assets/logo.png';
 
 const Login = () => {
   const navigate = useNavigate();
-  const [showManagerLogin, setShowManagerLogin] = useState(false);
+  const [view, setView] = useState('role');
   const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loginAttempts, setLoginAttempts] = useState({});
 
-  const handleEmployeeClick = () => {
+    // Reset state when changing views
+  useEffect(() => {
+    setError('');
+    setUsername('');
+    setEmail('');
+    setPassword('');
+  }, [view]);
+
+  const handleEmployeeLogin = (employeeName) => {
+    const now = new Date();
+    addHistoryLog({
+      type: 'Employee Login',
+      description: `Employee logged into POS system`,
+      user: employeeName,
+      timestamp: now.toISOString(),
+      date: now.toISOString().split('T')[0],
+      time: now.toTimeString().split(' ')[0]
+    });
     navigate('/employee/pos');
   };
 
-  // Modify Login Security via MFA
-  const handleManagerLogin = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
-    // Simple mock auth
+    setError('');
+
+    if (!username || !password) {
+      setError('Please enter both username/email and password');
+      return;
+    }
+
+    const now = new Date();
+    const timestamp = now.toISOString();
+    const date = now.toISOString().split('T')[0];
+    const time = now.toTimeString().split(' ')[0];
+
+    // Admin check
     if (username === 'admin' && password === 'admin') {
+      addHistoryLog({
+        type: 'Admin Login',
+        description: 'Admin logged into the system',
+        user: 'admin',
+        timestamp,
+        date,
+        time
+      });
+      navigate('/admin/history');
+      return;
+    }
+
+    let users = await getUsers();
+    if (!Array.isArray(users)) {
+      users = [];
+    }
+    
+    const user = users.find(u => (u.username === username || u.email === username) && u.password === password);
+
+    if (user) {
+      addHistoryLog({
+        type: 'Manager Login',
+        description: `Manager ${user.username} logged into the dashboard`,
+        user: user.username,
+        timestamp,
+        date,
+        time
+      });
       navigate('/manager/dashboard');
     } else {
+      // Track failed attempts
+      const newAttempts = { ...loginAttempts, [username]: (loginAttempts[username] || 0) + 1 };
+      setLoginAttempts(newAttempts);
       
-      alert('Invalid credentials');
+      if (newAttempts[username] >= 3) {
+        addHistoryLog({
+          type: 'Failed Login Attempts',
+          description: `Multiple failed login attempts for user: ${username} (${newAttempts[username]} attempts)`,
+          user: username,
+          timestamp,
+          date,
+          time
+        });
+      }
+
+      setError('Invalid username/email or password. Please try again.');
     }
   };
 
+  const handleSignup = async (e) => {
+    e.preventDefault();
+    setError('');
+
+    if (!username || !email || !password) {
+      setError('Please fill in all fields');
+      return;
+    }
+
+    let users = await getUsers();
+    if (!Array.isArray(users)) {
+      users = [];
+    }
+    
+    if (users.find(u => u.username === username || u.email === email)) {
+      setError('Username or Email already exists');
+      return;
+    }
+
+    const newUser = {
+      id: crypto.randomUUID(),
+      username,
+      email,
+      password,
+      role: 'manager',
+      createdAt: new Date().toISOString()
+    };
+
+    await saveUser(newUser);
+    
+    const now = new Date();
+    addHistoryLog({
+      type: 'Manager Signup',
+      description: `New manager account created: ${username}`,
+      user: newUser.username,
+      timestamp: now.toISOString(),
+      date: now.toISOString().split('T')[0],
+      time: now.toTimeString().split(' ')[0]
+    });
+    
+    setView('login');
+  };
+
+
   return (
-    <div className="flex h-screen bg-gradient-to-br from-[#0f2818] to-[#133b32] text-white overflow-hidden">
+    <div className="flex h-screen bg-[#0f2818] text-white overflow-hidden font-sans">
       {/* Left Side - Logo */}
       <div className="w-1/2 flex flex-col items-center justify-center relative">
         <div className="absolute inset-0 bg-gradient-to-br from-[#133b32]/90 to-[#0f2818]/90"></div>
@@ -40,117 +159,141 @@ const Login = () => {
         </div>
       </div>
 
-      {/* Right Side - Buttons or Form */}
-      <div className="w-1/2 bg-gradient-to-br from-[#fef9c3] to-[#fef08a] text-black flex flex-col items-center justify-center relative">
-        <div className="absolute inset-0 bg-white/10 backdrop-blur-sm"></div>
-        <div className="z-10 w-full max-w-md px-8">
-          {!showManagerLogin ? (
-            <div className="flex flex-col space-y-6 animate-slide-up">
-              <div className="text-center mb-8">
-                <h2 className="text-3xl font-bold text-gray-800 mb-2">Welcome Back</h2>
-                <p className="text-gray-600">Select your role to continue</p>
+      {/* Right Side - Forms */}
+      <div className="w-1/2 bg-[#fef9c3] text-black flex flex-col items-center justify-center relative p-12">
+        <div className="z-10 w-full max-w-md">
+          
+          {view === 'role' && (
+            <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <div className="text-center mb-12">
+                <h2 className="text-4xl font-bold text-gray-900 mb-3">Welcome Back</h2>
+                <p className="text-gray-600 text-lg">Select your role to continue</p>
               </div>
               
-              <button 
-                onClick={handleEmployeeClick}
-                className="group relative py-6 bg-white border-2 border-gray-800 rounded-2xl text-xl font-bold hover:bg-gray-50 transition-all duration-300 shadow-lg hover:shadow-xl hover:-translate-y-1 overflow-hidden"
-              >
-                <div className="absolute inset-0 bg-gradient-to-r from-blue-500/10 to-green-500/10 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                <div className="relative flex items-center justify-center gap-3">
-                  <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center">
-                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                    </svg>
+              <div className="grid gap-6">
+                <button 
+                  onClick={() => handleEmployeeLogin('Employee 1')}
+                  className="group flex items-center justify-between p-6 bg-white border-2 border-gray-200 rounded-2xl hover:border-green-600 hover:shadow-xl transition-all duration-300"
+                >
+                  <div className="flex items-center gap-4">
+                    <div className="w-14 h-14 bg-green-100 rounded-xl flex items-center justify-center text-green-600 group-hover:bg-green-600 group-hover:text-white transition-colors">
+                      <UserIcon size={28} />
+                    </div>
+                    <div className="text-left">
+                      <span className="block text-xl font-bold text-gray-900">EMPLOYEE</span>
+                      <span className="text-sm text-gray-500">Access POS terminal</span>
+                    </div>
                   </div>
-                  <span>EMPLOYEE</span>
-                </div>
-              </button>
-              
-              <button 
-                onClick={() => setShowManagerLogin(true)}
-                className="group relative py-6 bg-gradient-to-r from-gray-800 to-gray-900 text-white border-2 border-gray-800 rounded-2xl text-xl font-bold hover:from-gray-900 hover:to-black transition-all duration-300 shadow-lg hover:shadow-xl hover:-translate-y-1 overflow-hidden"
-              >
-                <div className="absolute inset-0 bg-gradient-to-r from-yellow-500/20 to-orange-500/20 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                <div className="relative flex items-center justify-center gap-3">
-                  <div className="w-8 h-8 bg-yellow-500 rounded-lg flex items-center justify-center">
-                    <svg className="w-5 h-5 text-gray-900" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                    </svg>
+                  <ArrowRight className="text-gray-300 group-hover:text-green-600 transition-colors" />
+                </button>
+
+                <button 
+                  onClick={() => setView('login')}
+                  className="group flex items-center justify-between p-6 bg-gray-900 border-2 border-gray-900 rounded-2xl hover:bg-black hover:shadow-xl transition-all duration-300"
+                >
+                  <div className="flex items-center gap-4">
+                    <div className="w-14 h-14 bg-yellow-400 rounded-xl flex items-center justify-center text-gray-900 group-hover:bg-yellow-500 transition-colors">
+                      <Lock size={28} />
+                    </div>
+                    <div className="text-left">
+                      <span className="block text-xl font-bold text-white">MANAGER</span>
+                      <span className="text-sm text-gray-400">Dashboard & Analytics</span>
+                    </div>
                   </div>
-                  <span>MANAGER</span>
-                </div>
-              </button>
+                  <ArrowRight className="text-gray-500 group-hover:text-yellow-400 transition-colors" />
+                </button>
+              </div>
             </div>
-          ) : (
-            <form onSubmit={handleManagerLogin} className="flex flex-col space-y-6 animate-slide-up">
-              <div className="text-center mb-6">
-                <h2 className="text-3xl font-bold text-gray-800 mb-2">Manager Login</h2>
-                <p className="text-gray-600">Enter your credentials</p>
+          )}
+
+          {(view === 'login' || view === 'signup') && (
+            <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <div className="text-center mb-10">
+                <h2 className="text-4xl font-bold text-gray-900 mb-3">
+                  {view === 'login' ? 'Manager Login' : 'Create Account'}
+                </h2>
+                <p className="text-gray-600 text-lg">
+                  {view === 'login' ? 'Enter your credentials to access the dashboard' : 'Fill in the details to register as a manager'}
+                </p>
               </div>
-              
-              <div className="space-y-4">
-                <div>
-                    <label className="block font-bold mb-2 text-gray-700">Username</label>
+
+              <form onSubmit={view === 'login' ? handleLogin : handleSignup} className="space-y-6">
+                {error && (
+                  <div className="p-4 bg-red-50 border-l-4 border-red-500 text-red-700 text-sm font-medium rounded-r-lg">
+                    {error}
+                  </div>
+                )}
+
+                <div className="space-y-4">
+                  <div className="relative">
+                    <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+                    <input 
+                      type="text" 
+                      placeholder="Username or Email"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      className="w-full pl-12 pr-4 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-green-600 focus:ring-0 transition-all text-lg outline-none"
+                      required
+                    />
+                  </div>
+
+                  {view === 'signup' && (
                     <div className="relative">
-                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                        </svg>
-                      </div>
+                      <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
                       <input 
-                          type="text" 
-                          value={username}
-                          onChange={(e) => setUsername(e.target.value)}
-                          className="w-full pl-10 pr-4 py-3 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all duration-200 text-lg"
-                          placeholder="Enter username"
-                          required
+                        type="email" 
+                        placeholder="Email Address"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        className="w-full pl-12 pr-4 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-green-600 focus:ring-0 transition-all text-lg outline-none"
+                        required
                       />
                     </div>
+                  )}
+
+                  <div className="relative">
+                    <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+                    <input 
+                      type="password" 
+                      placeholder="Password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className="w-full pl-12 pr-4 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-green-600 focus:ring-0 transition-all text-lg outline-none"
+                      required
+                    />
+                  </div>
                 </div>
-                
-                <div>
-                    <label className="block font-bold mb-2 text-gray-700">Password</label>
-                    <div className="relative">
-                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                        </svg>
-                      </div>
-                      <input 
-                          type="password" 
-                          value={password}
-                          onChange={(e) => setPassword(e.target.value)}
-                          className="w-full pl-10 pr-4 py-3 border-2 border-gray-300 rounded-xl focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all duration-200 text-lg"
-                          placeholder="Enter password"
-                          required
-                      />
-                    </div>
+
+                <div className="text-center">
+                  <button 
+                    type="button"
+                    onClick={() => setView(view === 'login' ? 'signup' : 'login')}
+                    className="text-gray-600 hover:text-green-700 font-semibold transition-colors cursor-pointer"
+                  >
+                    {view === 'login' ? 'Don\'t have an account? Sign up' : 'Already have an account? Login'}
+                  </button>
                 </div>
-              </div>
-              
-              <button 
+
+                <button 
                   type="submit"
-                  className="w-full py-4 bg-gradient-to-r from-blue-600 to-blue-700 text-white border-2 border-blue-800 rounded-xl text-lg font-bold hover:from-blue-700 hover:to-blue-800 transition-all duration-300 shadow-lg hover:shadow-xl hover:-translate-y-1"
-              >
-                  Login to Dashboard
-              </button>
-              
-              <button 
+                  className="w-full py-5 bg-blue-600 text-white rounded-xl text-xl font-bold hover:bg-blue-700 shadow-lg hover:shadow-blue-200 transition-all active:scale-[0.98]"
+                >
+                  {view === 'login' ? 'Login to Dashboard' : 'Create Account'}
+                </button>
+
+                <button 
                   type="button"
-                  onClick={() => {
-                    setShowManagerLogin(false);
-                    setUsername('');
-                    setPassword('');
-                  }}
-                  className="w-full py-3 text-center text-gray-600 hover:text-gray-800 font-medium transition-colors duration-200"
-              >
+                  onClick={() => setView('role')}
+                  className="w-full py-3 text-gray-500 hover:text-gray-800 font-medium transition-colors"
+                >
                   ← Back to role selection
-              </button>
-            </form>
-        )}
+                </button>
+              </form>
+            </div>
+          )}
+        </div>
       </div>
     </div>
-  </div>
   );
 };
 
