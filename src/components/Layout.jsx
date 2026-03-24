@@ -12,6 +12,7 @@ const Layout = () => {
   const isEmployee = location.pathname.includes('/employee');
   const isAdmin = location.pathname.includes('/admin');
   const [historyData, setHistoryData] = useState([]);
+  const [currentUsername, setCurrentUsername] = useState('');
   
   // POS-specific route path -> make POS full viewport height and non-scrollable
   const isEmployeePOS = location.pathname === '/employee/pos' || location.pathname.includes('/employee/pos');
@@ -24,7 +25,10 @@ const Layout = () => {
       };
       loadHistory();
     }
-  }, [isAdmin]);
+    // Get username from unified sessionStorage key
+    const username = sessionStorage.getItem('username');
+    setCurrentUsername(username || 'User');
+  }, [isAdmin, isManager]);
 
   return (
     <div className="flex min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -40,7 +44,7 @@ const Layout = () => {
         </>
       ) : isManager ? (
         <>
-          <Sidebar role="MANAGER" />
+          <Sidebar role="MANAGER" username={currentUsername} />
           <div className="flex-1 ml-64 transition-all duration-300 ease-in-out">
             <div className="min-h-screen bg-gradient-to-br from-white via-gray-50 to-gray-100">
               <Outlet />

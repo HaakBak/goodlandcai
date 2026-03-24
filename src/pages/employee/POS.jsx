@@ -3,6 +3,13 @@ import { getMenu, saveTransaction, getTransactions, resetMenu, getBusinessInfo, 
 import { generateReceiptPDF } from '../../services/receiptServices';
 import { useNavigate } from 'react-router-dom';
 
+// Helper function to get current user and role from session
+const getCurrentUserInfo = () => {
+  const username = sessionStorage.getItem('username') || 'Unknown';
+  const userRole = sessionStorage.getItem('userRole') || 'Unknown';
+  return { username, userRole };
+};
+
 const POS = () => {
   const [menu, setMenu] = useState([]);
   const [search, setSearch] = useState('');
@@ -17,7 +24,8 @@ const POS = () => {
 
   useEffect(() => {
     // Reset menu to ensure latest prices are loaded and fetch service fees
-    resetMenu().then(() => getMenu()).then(setMenu);
+    resetMenu();
+    getMenu().then(setMenu);
     getServiceFees().then(setServiceFees);
   }, []);
 
@@ -68,7 +76,7 @@ const POS = () => {
   
   // Calculate discount on the total (which already includes VAT)
   const hasDiscount = discountType !== 'None';
-  const discountAmount = hasDiscount ? baseAmount * 0.2 : 0; // 20% discount
+  const discountAmount = hasDiscount ? baseAmount * 0.12 : 0; // 12% discount
   const discountedAmount = baseAmount - discountAmount;
   
   // If customer has discount (PWD/Senior), they are exempted from VAT
@@ -104,11 +112,12 @@ const POS = () => {
     }
     
     try {
+        const { username, userRole } = getCurrentUserInfo();
         const transactions = await getTransactions();
         const nextOrderNum = (transactions.length + 1);
         const timeNow = new Date().toLocaleTimeString();
 
-        // 1. Construct Transaction Object
+        // 1. Construct Transaction Object with timestamp for daily metrics tracking
         const newTransaction = {
             id: crypto.randomUUID(),
             orderNumber: nextOrderNum,
@@ -130,11 +139,17 @@ const POS = () => {
             change: change,
             type: orderType,
             timeOrdered: timeNow,
-            status: 'No'
+            timestamp: new Date().toISOString(),
+            status: 'No',
+            employeeId: username
         };
 
         // 2. Save Transaction
         await saveTransaction(newTransaction);
+
+        // Note: Transaction logs are stored only in TRANSACTIONS table (for manager viewing only)
+        // Admin activity logs do NOT show employee transactions - only in manager's transaction logs
+        console.log('📊 [Transaction Saved]', { orderNumber: nextOrderNum, totalAmount, items: cart.length, employee: username });
 
         // 3. Generate PDF Receipt
         let pdfError = false;
@@ -175,10 +190,12 @@ const POS = () => {
                 <button 
                     onClick={() => {
                       const now = new Date();
+                      const { username, userRole } = getCurrentUserInfo();
                       addHistoryLog({
                         type: 'Employee Logout',
                         description: 'Employee logged out of POS system',
-                        user: 'Employee',
+                        user: username,
+                        role: userRole,
                         timestamp: now.toISOString(),
                         date: now.toISOString().split('T')[0],
                         time: now.toTimeString().split(' ')[0]

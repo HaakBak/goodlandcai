@@ -15,7 +15,8 @@ const POSM = () => {
   const [serviceFees, setServiceFees] = useState({ dineIn: 3, takeout: 5 });
 
   useEffect(() => {
-    resetMenu().then(() => getMenu()).then(setMenu);
+    resetMenu();
+    getMenu().then(setMenu);
     getServiceFees().then(setServiceFees);
   }, []);
 

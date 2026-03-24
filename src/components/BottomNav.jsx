@@ -9,7 +9,7 @@ const BottomNav = () => {
 
   return (
     <div className="fixed bottom-4 left-1/2 transform -translate-x-1/2 pointer-events-none z-50">
-      <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-2xl border border-gray-200 flex overflow-hidden w-80 pointer-events-auto transition-all duration-300 hover:shadow-3xl hover:scale-105">
+      <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-2xl border border-gray-200 flex overflow-hidden w-72 pointer-events-auto transition-all duration-300 hover:shadow-3xl hover:scale-105">
         <Link 
           to="/employee/pos" 
           className={`group relative flex-1 text-center py-4 font-bold transition-all duration-300 border-r border-gray-200 ${
@@ -35,7 +35,7 @@ const BottomNav = () => {
         
         <Link 
           to="/employee/orders" 
-          className={`group relative flex-1 text-center py-4 font-bold transition-all duration-300 ${
+          className={`group relative flex-1 text-center py-4 font-bold transition-all duration-300 border-r border-gray-200 ${
             isOrders 
               ? 'bg-gradient-to-b from-blue-500 to-blue-600 text-white shadow-lg transform scale-105' 
               : 'hover:bg-gradient-to-b hover:from-gray-50 hover:to-gray-100 hover:text-blue-600'

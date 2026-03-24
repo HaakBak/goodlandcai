@@ -1,19 +1,46 @@
 import React, { useEffect, useState } from 'react';
 
+/**
+ * NotificationToast Component
+ * 
+ * Displays inventory notifications with categorization:
+ * - CRITICAL (warning): Out of stock (0 items) - Red, longer duration
+ * - MINIMAL (minimal): Low stock alert - Orange/Yellow, standard duration
+ * - INFO (info): General information - Blue, standard duration
+ * 
+ * Each notification displays:
+ * - Category indicator with appropriate color
+ * - Item name and stock information
+ * - Timestamp (date and time)
+ * - Auto-dismisses after set duration
+ */
+
 const NotificationToast = () => {
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
     const handleShowToast = (event) => {
-      setToast(event.detail);
+      // Extract notification data from the custom event
+      const notificationData = event.detail;
       
-      // Auto hide after 4 seconds
-      setTimeout(() => {
+      console.log('🔔 [Toast Received]', notificationData);
+      setToast(notificationData);
+      
+      // Auto hide after different durations based on severity:
+      // - CRITICAL alerts: 6 seconds (more important, needs attention)
+      // - MINIMAL/INFO: 4 seconds (standard)
+      const duration = notificationData.category === 'CRITICAL' ? 6000 : 4000;
+      
+      const timer = setTimeout(() => {
         setToast(null);
-      }, 4000);
+      }, duration);
+
+      // Cleanup timer if component unmounts
+      return () => clearTimeout(timer);
     };
 
     window.addEventListener('SHOW_TOAST', handleShowToast);
+    
     return () => {
       window.removeEventListener('SHOW_TOAST', handleShowToast);
     };
@@ -21,20 +48,81 @@ const NotificationToast = () => {
 
   if (!toast) return null;
 
+  // Determine styling based on notification type/category
+  const isCritical = toast.type === 'warning' || toast.category === 'CRITICAL';
+  const isMinimal = toast.category === 'MINIMAL';
+
+  // Color scheme for different notification types
+  const bgColor = isCritical
+    ? 'bg-red-100' // Critical alerts: Red background
+    : isMinimal
+    ? 'bg-amber-100' // Minimal alerts: Amber/Orange background
+    : 'bg-blue-100'; // Info: Blue background
+
+  const textColor = isCritical
+    ? 'text-red-900'
+    : isMinimal
+    ? 'text-amber-900'
+    : 'text-blue-900';
+
+  const iconBgColor = isCritical
+    ? 'bg-red-600'
+    : isMinimal
+    ? 'bg-amber-600'
+    : 'bg-blue-600';
+
+  const borderColor = isCritical
+    ? 'border-red-400'
+    : isMinimal
+    ? 'border-amber-400'
+    : 'border-blue-400';
+
+  // Format timestamp display
+  const timeDisplay = toast.time || new Date(toast.timestamp).toTimeString().split(' ')[0];
+  const dateDisplay = toast.date || new Date(toast.timestamp).toISOString().split('T')[0];
+
   return (
-    <div className="fixed bottom-6 right-6 z-50 animate-bounce">
-      <div className={`p-4 rounded-xl shadow-2xl flex items-center gap-3 min-w-[300px] border-2 border-black ${
-        toast.type === 'warning' ? 'bg-red-100 text-red-900' : 'bg-blue-100 text-blue-900'
-      }`}>
-        <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-white ${
-             toast.type === 'warning' ? 'bg-red-600' : 'bg-blue-600'
+    <div className={`fixed bottom-6 right-6 z-50 ${isCritical ? 'animate-pulse' : 'animate-bounce'}`}>
+      <div className={`p-4 rounded-xl shadow-2xl flex items-start gap-3 min-w-[320px] border-2 ${
+        borderColor
+      } ${bgColor} ${textColor}`}>
+        
+        {/* Icon Container - Different icon for critical vs minimal */}
+        <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white flex-shrink-0 ${
+          iconBgColor
         }`}>
-            !
+          {isCritical ? '⚠️' : isMinimal ? '📉' : 'ℹ️'}
         </div>
-        <div>
-            <h4 className="font-bold">{toast.type === 'warning' ? 'Alert' : 'Info'}</h4>
-            <p className="text-sm">{toast.message}</p>
+
+        {/* Content Container */}
+        <div className="flex-1">
+          {/* Category Badge */}
+          <h4 className="font-bold text-sm mb-1">
+            {isCritical
+              ? '🚨 CRITICAL WARNING'
+              : isMinimal
+              ? '⚡ MINIMAL ALERT'
+              : 'ℹ️ Info'}
+          </h4>
+          
+          {/* Message */}
+          <p className="text-sm font-medium mb-2">{toast.message}</p>
+
+          {/* Timestamp Footer */}
+          <div className="text-xs opacity-75 flex items-center gap-2">
+            <span>📅 {dateDisplay}</span>
+            <span>🕐 {timeDisplay}</span>
+          </div>
         </div>
+
+        {/* Close Button */}
+        <button
+          onClick={() => setToast(null)}
+          className="flex-shrink-0 text-lg opacity-70 hover:opacity-100 transition-opacity"
+          aria-label="Close notification"
+        >
+          ✕
+        </button>
       </div>
     </div>
   );

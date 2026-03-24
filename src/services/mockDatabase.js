@@ -1,4 +1,10 @@
 import logo from '/src/assets/logo.png';
+import {
+  BUSINESS_DEFAULT_INFO,
+  SERVICE_FEES_DEFAULTS,
+  STORAGE_KEYS,
+  ADMIN_DEFAULT_USER,
+} from '../config/appConfig';
 
 const INITIAL_MENU = [
   { 
@@ -83,11 +89,7 @@ const INITIAL_INVENTORY = [
 ];
 
 const INITIAL_BUSINESS_INFO = {
-  tin: "908-767-876-000",
-  name: "GoodLand Cafe",
-  status: "VAT_Reg",
-  address: "Cariño Street, Baguio City",
-  phone: "(239) 555-0298",
+  ...BUSINESS_DEFAULT_INFO,
   logoUrl: logo,
 };
 
@@ -97,8 +99,7 @@ const INITIAL_SUPPLIERS = [
 ];
 
 const INITIAL_SERVICE_FEES = {
-  dineIn: 3,
-  takeout: 5
+  ...SERVICE_FEES_DEFAULTS,
 };
 
 const INITIAL_RECIPES = {};
@@ -106,21 +107,11 @@ const INITIAL_RECIPES = {};
 const INITIAL_USAGE_LOGS = [];
 
 const KEYS = {
-  MENU: 'pos_menu',
-  INVENTORY: 'pos_inventory',
-  TRANSACTIONS: 'pos_transactions',
-  BUSINESS_INFO: 'pos_business_info',
-  NOTIFICATIONS: 'pos_notifications',
-  SUPPLIERS: 'pos_suppliers',
-  RECIPES: 'pos_recipes',
-  USAGE_LOGS: 'pos_usage_logs',
-  SERVICE_FEES: 'pos_service_fees',
-  USERS: 'pos_users',
-  HISTORY: 'pos_history',
+  ...STORAGE_KEYS,
 };
 
 const INITIAL_USERS = [
-  { id: 'admin-id', username: 'admin', email: 'admin@goodland.com', password: 'admin', role: 'admin' }
+  { ...ADMIN_DEFAULT_USER }
 ];
 
 
@@ -170,6 +161,8 @@ export const addHistoryLog = async (log) => {
   setLocalStorage(KEYS.HISTORY, history);
 };
 
+export const clearHistory = () => Promise.resolve(setLocalStorage(KEYS.HISTORY, []));
+
 export const getMenu = () => Promise.resolve(getLocalStorage(KEYS.MENU, INITIAL_MENU));
 export const saveMenu = (menu) => Promise.resolve(setLocalStorage(KEYS.MENU, menu));
 export const resetMenu = () => Promise.resolve(setLocalStorage(KEYS.MENU, INITIAL_MENU));
@@ -191,6 +184,8 @@ export const updateTransactionStatus = (transactionId, newStatus = 'Yes') => {
   setLocalStorage(KEYS.TRANSACTIONS, updated);
   return Promise.resolve();
 };
+
+export const clearTransactions = () => Promise.resolve(setLocalStorage(KEYS.TRANSACTIONS, []));
 
 export const getBusinessInfo = () => Promise.resolve(getLocalStorage(KEYS.BUSINESS_INFO, INITIAL_BUSINESS_INFO));
 export const saveBusinessInfo = (info) => Promise.resolve(setLocalStorage(KEYS.BUSINESS_INFO, info));

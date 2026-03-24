@@ -1,24 +1,33 @@
 import React, { useEffect, useState } from 'react';
 import { getTransactions, getNotifications } from '../../services/mockDatabase';
-import { calculateCategoryRanking, calculateESA } from '../../utils/mlEngine';
-import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
-  LineChart, Line, Legend 
+import { calculateCategoryRanking, calculateForecasting, calculateItemForecast, calculateRestockingNeeds } from '../../utils/mlEngine';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  LineChart, Line, Legend
 } from 'recharts';
 
 const Dashboard = () => {
   const [transactions, setTransactions] = useState([]);
   
-  // Metrics
+  // Metrics - daily orders and sales tracking
   const [todaysOrders, setTodaysOrders] = useState(0);
+  const [dailySales, setDailySales] = useState(0);
   
   // Ranking Chart State
   const [rankingData, setRankingData] = useState([]);
   const [selectedCategory, setSelectedCategory] = useState('Beverages');
 
-  // Forecasting Chart State
+  // Forecasting State
+  const [forecastPeriod, setForecastPeriod] = useState('monthly');
   const [forecastData, setForecastData] = useState([]);
-//Notifications
+  const [forecastMAPE, setForecastMAPE] = useState(0);
+  const [nextPeriodForecast, setNextPeriodForecast] = useState(0);
+  
+  // Item Forecast & Restocking State
+  const [itemForecast, setItemForecast] = useState(null);
+  const [restockingPlan, setRestockingPlan] = useState([]);
+  
+  // Notifications
   const [notifications, setNotifications] = useState([]);
 
   useEffect(() => {
@@ -26,9 +35,13 @@ const Dashboard = () => {
         const data = await getTransactions();
         setTransactions(data);
 
-        // Calculate "Today's Orders" - Counting "Yes" status as completed for demo
-        const completedCount = data.filter(t => t.status === 'Yes').length;
-        setTodaysOrders(completedCount);
+        // Load daily metrics (orders completed & total sales) - automatically resets at midnight
+        const today = new Date().toISOString().split('T')[0];
+        const todaysTransactions = data.filter(t => t.timestamp && t.timestamp.startsWith(today));
+        const completedOrders = todaysTransactions.length;
+        const dailySales = todaysTransactions.reduce((sum, t) => sum + (t.totalAmount || t.total || 0), 0);
+        setTodaysOrders(completedOrders);
+        setDailySales(dailySales);
 
         // Load Notifications
         const notifs = await getNotifications();
@@ -56,14 +69,27 @@ const Dashboard = () => {
     }
   }, [transactions, selectedCategory]);
 
-  // Update Forecast Chart when transactions change
+  // Update Forecast Chart when transactions or period changes
   useEffect(() => {
     if (transactions.length > 0) {
-        // Use ESA algorithm
-        const esaData = calculateESA(transactions, 0.5); 
-        setForecastData(esaData);
+        const forecastResult = calculateForecasting(transactions, forecastPeriod);
+        setForecastData(forecastResult.data);
+        setForecastMAPE(forecastResult.mape);
+        setNextPeriodForecast(forecastResult.nextForecast);
     }
-  }, [transactions]);
+  }, [transactions, forecastPeriod]);
+
+  // Calculate Item Forecast & Restocking Needs
+  useEffect(() => {
+    if (transactions.length > 0) {
+        const itemForecastResult = calculateItemForecast(transactions, forecastPeriod);
+        setItemForecast(itemForecastResult);
+
+        // Generate restocking plan with smart parameters
+        const restockPlan = calculateRestockingNeeds(itemForecastResult, {}, { minStockDays: 2, maxStockDays: 5 });
+        setRestockingPlan(restockPlan);
+    }
+  }, [transactions, forecastPeriod]);
 
   const categories = ['Beverages', 'Main Dish', 'Side Dish', 'Desserts'];
 
@@ -113,7 +139,7 @@ const Dashboard = () => {
                 </div>
                 
                 {/*Reconfigure Sales Forecasting by top sales based on amount of sold per day, month, year*/}
-                {/* Chart 2: Sales Forecasting (ESA) */}
+                {/* Chart 2: Sales Forecasting (Holt-Winters Triple Exponential Smoothing) */}
                 <div className="border border-gray-200 p-6 rounded-2xl shadow-xl bg-white/80 backdrop-blur-sm hover:shadow-2xl transition-all duration-300 hover:scale-105">
                     <div className="flex justify-between items-center mb-6">
                         <div className="flex items-center gap-3">
@@ -122,26 +148,164 @@ const Dashboard = () => {
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                                 </svg>
                             </div>
-                            <h3 className="text-xl font-bold text-gray-800">Sales Forecasting</h3>
+                            <h3 className="text-xl font-bold text-gray-800">Sales Forecast</h3>
                         </div>
-                        <div className="bg-gradient-to-r from-blue-50 to-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-semibold border border-blue-200 shadow-sm">
-                            Exponential Smoothing
+                        
+                        {/* Period Selection Tabs - Top Right */}
+                        <div className="flex gap-2 bg-gray-100 p-1 rounded-lg shadow-sm">
+                            {[
+                                { label: 'Daily', value: 'daily' },
+                                { label: 'Monthly', value: 'monthly' },
+                                { label: 'Yearly', value: 'yearly' }
+                            ].map(period => (
+                                <button
+                                    key={period.value}
+                                    onClick={() => setForecastPeriod(period.value)}
+                                    className={`px-4 py-2 rounded-md font-semibold text-sm transition-all duration-200 ${
+                                        forecastPeriod === period.value
+                                            ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-md scale-105'
+                                            : 'bg-white text-gray-700 hover:bg-gray-50'
+                                    }`}
+                                >
+                                    {period.label}
+                                </button>
+                            ))}
                         </div>
                     </div>
+
+                    {/* Model Accuracy & Next Forecast Info */}
+                    {/* <div className="flex gap-4 mb-4 text-sm">
+                        <div className="flex items-center gap-2 bg-blue-50 px-3 py-2 rounded-lg border border-blue-200">
+                            <span className="text-blue-700 font-semibold">Model Accuracy (MAPE):</span>
+                            <span className="text-blue-600 font-bold">{forecastMAPE.toFixed(2)}%</span>
+                        </div>
+                        <div className="flex items-center gap-2 bg-green-50 px-3 py-2 rounded-lg border border-green-200">
+                            <span className="text-green-700 font-semibold">Next Period Forecast:</span>
+                            <span className="text-green-600 font-bold">₱ {nextPeriodForecast.toFixed(2)}</span>
+                        </div>
+                    </div> */}
+
                     <div className="h-72 w-full">
                         <ResponsiveContainer width="100%" height="100%">
                             <LineChart data={forecastData}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                                <XAxis dataKey="time" tick={{fontSize: 12, fill: '#666'}} />
+                                <XAxis dataKey="label" tick={{fontSize: 12, fill: '#666'}} angle={-45} textAnchor="end" height={80} />
                                 <YAxis tick={{fontSize: 12, fill: '#666'}} />
-                                <Tooltip contentStyle={{ backgroundColor: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px' }} />
+                                <Tooltip contentStyle={{ backgroundColor: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px' }} formatter={(value) => `₱ ${value.toFixed(2)}`} />
                                 <Legend wrapperStyle={{ paddingTop: '20px' }} />
-                                <Line type="monotone" dataKey="actual" stroke="#3b82f6" name="Actual Sales" strokeWidth={3} dot={{r:5, fill: '#3b82f6'}} activeDot={{r:7}} />
-                                <Line type="monotone" dataKey="forecast" stroke="#10b981" name="Forecast (ESA)" strokeWidth={3} strokeDasharray="8 4" dot={false} />
+                                <Line type="monotone" dataKey="actual" stroke="#3b82f6" name="Actual Sales" strokeWidth={3} dot={{r:4, fill: '#3b82f6'}} activeDot={{r:6}} />
+                                <Line type="monotone" dataKey="forecast" stroke="#10b981" name="Forecast" strokeWidth={3} strokeDasharray="8 4" dot={{r:4, fill: '#10b981'}} activeDot={{r:6}} />
                             </LineChart>
                         </ResponsiveContainer>
                     </div>
+
+                    {/* <div className="mt-4 text-xs text-gray-600 bg-gray-50 p-3 rounded-lg border border-gray-200">
+                        <p><strong>Note:</strong> Forecast uses Holt-Winters Triple Exponential Smoothing with adaptive parameters for {forecastPeriod} analysis. MAPE indicates model accuracy (lower is better). Use for inventory planning.</p>
+                    </div> */}
                 </div>
+
+                {/* Chart 3: Inventory Recommendations based on Item Forecast - COMMENTED OUT FOR TESTING */}
+                {/* <div className="border border-gray-200 p-6 rounded-2xl shadow-xl bg-white/80 backdrop-blur-sm hover:shadow-2xl transition-all duration-300 hover:scale-105">
+                    <div className="flex justify-between items-center mb-6">
+                        <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 bg-gradient-to-r from-purple-100 to-purple-200 rounded-xl flex items-center justify-center shadow-md">
+                                <svg className="w-6 h-6 text-purple-600" fill="currentColor" viewBox="0 0 20 20">
+                                    <path d="M3 1a1 1 0 000 2h1.22l.305 1.222a.997.997 0 00.01.042l1.358 5.43-.893.892C3.74 11.846 4.632 14 6.414 14H15a1 1 0 000-2H6.414l1-1H14a1 1 0 00.894-.553l3-6A1 1 0 0017 6H6.28l-.31-1.243A1 1 0 005 4H3z" />
+                                    <path d="M16 16a2 2 0 11-4 0 2 2 0 014 0z" />
+                                    <path d="M4 16a2 2 0 11-4 0 2 2 0 014 0z" />
+                                </svg>
+                            </div>
+                            <h3 className="text-xl font-bold text-gray-800">Inventory Forecast</h3>
+                        </div>
+                        <div className={`px-3 py-1 rounded-full text-xs font-semibold shadow-sm ${
+                            itemForecast?.confidence >= 90 
+                                ? 'bg-green-100 text-green-700 border border-green-200' 
+                                : 'bg-yellow-100 text-yellow-700 border border-yellow-200'
+                        }`}>
+                            {itemForecast?.confidence?.toFixed(1) || 0}% Confidence
+                        </div>
+                    </div>
+
+                    <div className="mb-4 text-sm bg-purple-50 p-3 rounded-lg border border-purple-200">
+                        <p className="text-purple-800"><strong>📊 Prediction:</strong> {itemForecast?.recommendations?.length || 0} items recommended for restocking based on {itemForecast?.period} forecast analysis</p>
+                    </div>
+
+                    {/* Restocking Items List */}
+                    {/* <div className="space-y-3 max-h-96 overflow-y-auto pr-2">
+                        {restockingPlan && restockingPlan.length > 0 ? (
+                            restockingPlan.map((item, idx) => (
+                                <div key={idx} className={`p-4 rounded-xl border transition-all duration-300 ${
+                                    item.urgency === 'HIGH' 
+                                        ? 'bg-gradient-to-r from-red-50 to-red-100 border-red-300 shadow-md' 
+                                        : item.urgency === 'MEDIUM'
+                                        ? 'bg-gradient-to-r from-yellow-50 to-yellow-100 border-yellow-300'
+                                        : 'bg-gradient-to-r from-blue-50 to-blue-100 border-blue-300'
+                                }`}>
+                                    <div className="flex justify-between items-start mb-2">
+                                        <div className="flex items-center gap-2">
+                                            <div className={`w-2.5 h-2.5 rounded-full ${
+                                                item.urgency === 'HIGH' ? 'bg-red-500' : (item.urgency === 'MEDIUM' ? 'bg-yellow-500' : 'bg-blue-500')
+                                            } animate-pulse`}></div>
+                                            <h4 className={`font-bold text-sm ${
+                                                item.urgency === 'HIGH' 
+                                                    ? 'text-red-800' 
+                                                    : item.urgency === 'MEDIUM'
+                                                    ? 'text-yellow-800'
+                                                    : 'text-blue-800'
+                                            }`}>
+                                                {item.item}
+                                            </h4>
+                                        </div>
+                                        <span className={`text-xs px-2 py-1 rounded-full font-semibold ${
+                                            item.urgency === 'HIGH' 
+                                                ? 'bg-red-200 text-red-800' 
+                                                : item.urgency === 'MEDIUM'
+                                                ? 'bg-yellow-200 text-yellow-800'
+                                                : 'bg-blue-200 text-blue-800'
+                                        }`}>
+                                            {item.urgency}
+                                        </span>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-2 text-xs mb-2">
+                                        <div>
+                                            <p className="text-gray-600 text-xs">Daily Demand</p>
+                                            <p className="font-bold text-sm">{item.dailyForecastDemand} units</p>
+                                        </div>
+                                        <div>
+                                            <p className="text-gray-600 text-xs">Order Qty</p>
+                                            <p className="font-bold text-sm">{item.optimalOrderQuantity} units</p>
+                                        </div>
+                                        <div>
+                                            <p className="text-gray-600 text-xs">Stock Levels</p>
+                                            <p className="font-bold text-sm">{item.minStockLevel}-{item.maxStockLevel}</p>
+                                        </div>
+                                        <div>
+                                            <p className="text-gray-600 text-xs">Restock By</p>
+                                            <p className="font-bold text-sm">{item.restockDate}</p>
+                                        </div>
+                                    </div>
+
+                                    <div className="flex items-center gap-1 text-xs">
+                                        <span className="inline-block w-1.5 h-1.5 bg-gray-400 rounded-full"></span>
+                                        <p className="text-gray-700">{item.trend === 'increasing' ? '📈' : item.trend === 'decreasing' ? '📉' : '➡️'} {item.notes}</p>
+                                    </div>
+                                </div>
+                            ))
+                        ) : (
+                            <div className="text-center py-8 text-gray-500">
+                                <svg className="w-12 h-12 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                                </svg>
+                                <p>No items require restocking at this time</p>
+                            </div>
+                        )}
+                    </div> */}
+
+                    {/* <div className="mt-4 text-xs text-gray-600 bg-gray-50 p-3 rounded-lg border border-gray-200">
+                        <p><strong>💡 Intelligence:</strong> AI predicts item demand based on {itemForecast?.period} sales patterns. 90%+ confidence means safe to order. Adjust min/max stock levels as needed.</p>
+                    </div> */}
+                {/* </div> */}
 
             </div>
 
@@ -159,6 +323,21 @@ const Dashboard = () => {
                         <span className="text-center font-semibold text-gray-700">Orders Completed</span>
                     </div>
                     <span className="text-5xl font-bold bg-gradient-to-r from-green-600 to-green-700 bg-clip-text text-transparent">{todaysOrders}</span>
+                    <span className="text-sm text-gray-500 mt-1">Today</span>
+                </div>
+
+                {/* Metric 2: Daily Sales - Displays total sales revenue for the current day with automatic midnight reset */}
+                <div className="border border-gray-200 rounded-3xl p-6 flex flex-col items-center justify-center bg-white/80 backdrop-blur-sm shadow-xl hover:shadow-2xl transition-all duration-300 hover:scale-105 h-40">
+                    <div className="flex items-center gap-2 mb-2">
+                        {/* Change icon to caash symbol*/}
+                        {/* <div className="w-8 h-8 bg-gradient-to-r from-blue-100 to-blue-200 rounded-xl flex items-center justify-center shadow-md">
+                            <svg className="w-5 h-5 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                                <path d="M8.16 2.75a.75.75 0 0 0-.32 1.02A7.503 7.503 0 0 1 16.5 10a7.5 7.5 0 0 1-13.066 4.62.75.75 0 0 0-1.11.99A9 9 0 1 0 17.659 1.1.75.75 0 0 0 16.9 2.1a7.5 7.5 0 0 1-8.74.65Z" />
+                            </svg>
+                        </div> */}
+                        <span className="text-center font-semibold text-gray-700">Total Sales</span>
+                    </div>
+                    <span className="text-5xl font-bold bg-gradient-to-r from-blue-600 to-blue-700 bg-clip-text text-transparent">₱ {dailySales.toFixed(2)}</span>
                     <span className="text-sm text-gray-500 mt-1">Today</span>
                 </div>
 

@@ -125,7 +125,11 @@ export const generateReceiptPDF = async (transaction, businessInfo) => {
     centerText(new Date().toLocaleDateString(), currentY, 10);
     currentY += 0.3;
 
-    // 3. Separator
+    //{Service Type}
+    centerText(doc.text(transaction.type || 'Dine In', centerX, currentY, { align: 'center' }), currentY, 10,);
+    currentY += 0.2;
+
+    //Separator 2
     centerText("***********************************", currentY, 10);
     currentY += 0.2;
 
@@ -151,10 +155,6 @@ export const generateReceiptPDF = async (transaction, businessInfo) => {
     
     currentY += 0.3;
 
-    // Order Type
-    doc.text("Order Type:", marginX, currentY);
-    doc.text(transaction.type || 'Dine In', marginX + 1.2, currentY);
-    currentY += 0.3;
 
     // 5. Items Header
     // Item Name      Qty      Price      Total

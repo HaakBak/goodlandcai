@@ -9,7 +9,16 @@ import {
   addInventoryItem,
   updateInventoryItem,
   getUsageLogs,
+  addHistoryLog,
 } from '../../services/mockDatabase';
+import { showNotification, evaluateInventoryAlert } from '../../services/notificationService';
+
+// Helper function to get current user and role from session
+const getCurrentUserInfo = () => {
+  const username = sessionStorage.getItem('username') || 'Unknown';
+  const userRole = sessionStorage.getItem('userRole') || 'Unknown';
+  return { username, userRole };
+};
 
 const InventoryPage = () => {
   const [activeTab, setActiveTab] = useState('Inventory');
@@ -22,7 +31,9 @@ const InventoryPage = () => {
   const [usageLogs, setUsageLogs] = useState([]);
 
   const [search, setSearch] = useState('');
-  const [sortOrder, setSortOrder] = useState(null);
+  // ✏️ EDIT: Button UI with separate sortType and sortDirection for clean interface
+  const [sortType, setSortType] = useState('Quantity');
+  const [sortDirection, setSortDirection] = useState('descending');
 
   const [showSupplierModal, setShowSupplierModal] = useState(false);
   const [supplierName, setSupplierName] = useState('');
@@ -80,6 +91,33 @@ const InventoryPage = () => {
     setRecipes(recipeData);
     setUsageLogs(logData);
   };
+
+  // ✏️ EDIT: Unified sort handler - toggles direction or switches type
+  const handleSortChange = (newSortType) => {
+    const isSameSort = newSortType === sortType;
+    
+    if (isSameSort) {
+      // ✏️ EDIT: Toggle direction if clicking same button
+      const toggledDirection = sortDirection === 'ascending' ? 'descending' : 'ascending';
+      setSortDirection(toggledDirection);
+    } else {
+      // ✏️ EDIT: Switch to new type and reset to descending
+      setSortType(newSortType);
+      setSortDirection('descending');
+    }
+  };
+
+  // ✏️ EDIT: Convert UI state to original sortOrder values for backward compatibility
+  const getSortOrderValue = () => {
+    if (sortType === 'Quantity') {
+      return sortDirection === 'ascending' ? 'least' : 'most';
+    } else if (sortType === 'Date') {
+      return sortDirection === 'ascending' ? 'oldest' : 'newest';
+    }
+    return null;
+  };
+
+  const sortOrder = getSortOrderValue();
 
   const handleAddSupplier = async () => {
     if (!supplierEmail.includes('@') || !supplierEmail.endsWith('.com')) {
@@ -195,7 +233,57 @@ const InventoryPage = () => {
       lowStockThreshold: parseInt(addItemData.lowStockThreshold, 10) || 5,
     };
 
+    // DEBUG: Log the new item creation
+    console.log('📝 [Adding New Inventory Item]', {
+      name: newItem.name,
+      stock: newItem.inStock,
+      threshold: newItem.lowStockThreshold,
+    });
+
     await addInventoryItem(newItem);
+    
+    // CHECK: Evaluate if item should trigger an alert based on initial stock
+    // This handles cases where a new item is added with stock already at/below threshold
+    if (newItem.inStock <= newItem.lowStockThreshold) {
+      if (newItem.inStock === 0) {
+        // CRITICAL: Item is created with 0 stock (out of stock)
+        showNotification({
+          message: `⚠️ CRITICAL: New item "${newItem.name}" was created with OUT OF STOCK status!`,
+          type: 'warning',
+          category: 'CRITICAL',
+          itemName: newItem.name,
+          currentStock: 0,
+          severity: 'high',
+        });
+        console.log('🚨 NEW ITEM CREATED OUT OF STOCK:', newItem.name);
+      } else {
+        // MINIMAL: Item is created with stock below threshold
+        showNotification({
+          message: `⚠️ MINIMAL ALERT: New item "${newItem.name}" created with low stock ${newItem.inStock} (threshold: ${newItem.lowStockThreshold})`,
+          type: 'minimal',
+          category: 'MINIMAL',
+          itemName: newItem.name,
+          currentStock: newItem.inStock,
+          threshold: newItem.lowStockThreshold,
+          severity: 'medium',
+        });
+        console.log('📉 NEW ITEM CREATED WITH LOW STOCK:', newItem.name);
+      }
+    }
+    
+    const now = new Date();
+    const { username, userRole } = getCurrentUserInfo();
+    addHistoryLog({
+      type: 'Inventory Change',
+      description: `Added inventory item: ${addItemData.name} (Stock: ${addItemData.stock}, Cost: ${addItemData.cost})`,
+      user_name: username,
+      user: username,
+      role: userRole,
+      timestamp: now.toISOString(),
+      date: now.toISOString().split('T')[0],
+      time: now.toTimeString().split(' ')[0]
+    });
+    
     await refreshData();
     handleClearNewItem();
   };
@@ -234,15 +322,75 @@ const InventoryPage = () => {
   const handleSaveEditItem = async () => {
     if (!editingItem) return;
 
-    await updateInventoryItem(editingItem.id, {
+    // DEBUG: Store old stock value for comparison
+    const oldStock = editingItem.inStock;
+    const newStock = parseInt(editFormData.stock, 10) || 0;
+    const newThreshold = parseInt(editFormData.lowStockThreshold, 10) || 5;
+
+    console.log('📝 [Editing Inventory Item]', {
       name: editFormData.name,
-      inStock: parseInt(editFormData.stock, 10) || 0,
+      oldStock,
+      newStock,
+      newThreshold,
+      stockChanged: oldStock !== newStock,
+    });
+
+    // CREATE the updated item object with new values
+    const updatedItemData = {
+      name: editFormData.name,
+      inStock: newStock,
       cost: parseFloat(editFormData.cost) || 0,
       type: editFormData.type,
       measurementUnit: editFormData.measurementUnit,
       measurementQty: parseInt(editFormData.measurementQty, 10) || 1,
       openStock: parseInt(editFormData.openStock, 10) || 0,
-      lowStockThreshold: parseInt(editFormData.lowStockThreshold, 10) || 5,
+      lowStockThreshold: newThreshold,
+    };
+
+    // UPDATE the item in database
+    await updateInventoryItem(editingItem.id, updatedItemData);
+
+    // ALERT LOGIC: Evaluate if the stock change should trigger an alert notification
+    if (oldStock !== newStock) {
+      console.log('🔄 [Stock Level Changed]', {
+        item: editFormData.name,
+        from: oldStock,
+        to: newStock,
+      });
+
+      // Create a temporary item object for evaluation
+      const tempItem = {
+        inStock: newStock,
+        lowStockThreshold: newThreshold,
+      };
+
+      // Use the evaluateInventoryAlert function to determine which alert (if any) to show
+      // This handles CRITICAL (0 stock) and MINIMAL (below threshold) alerts
+      evaluateInventoryAlert(tempItem, oldStock, editFormData.name);
+    } else {
+      // Stock hasn't changed, but threshold might have
+      // Log the change for debugging
+      if (editingItem.lowStockThreshold !== newThreshold) {
+        console.log('⚙️ [Alert Threshold Changed]', {
+          item: editFormData.name,
+          oldThreshold: editingItem.lowStockThreshold,
+          newThreshold,
+        });
+      }
+    }
+
+    // LOG the change to history
+    const now = new Date();
+    const { username, userRole } = getCurrentUserInfo();
+    addHistoryLog({
+      type: 'Inventory Change',
+      description: `Edited inventory item: ${editFormData.name} (Stock: ${oldStock} → ${newStock}, Cost: ${editFormData.cost})`,
+      user_name: username,
+      user: username,
+      role: userRole,
+      timestamp: now.toISOString(),
+      date: now.toISOString().split('T')[0],
+      time: now.toTimeString().split(' ')[0]
     });
 
     await refreshData();
@@ -296,37 +444,59 @@ const InventoryPage = () => {
   const handleSaveRecipe = async () => {
     if (!selectedDish) return;
     await saveRecipe(selectedDish.id, currentRecipe);
+    
+    const now = new Date();
+    const { username, userRole } = getCurrentUserInfo();
+    addHistoryLog({
+      type: 'Recipe Change',
+      description: `Updated recipe for: ${selectedDish.name} (${currentRecipe.length} ingredients)`,
+      user_name: username,
+      user: username,
+      role: userRole,
+      timestamp: now.toISOString(),
+      date: now.toISOString().split('T')[0],
+      time: now.toTimeString().split(' ')[0]
+    });
+    
     await refreshData();
     setShowAutoModal(false);
     setSelectedDish(null);
     setCurrentRecipe([]);
   };
 
+  // ✏️ EDIT: Original inline sorting logic using if-else chains (retains original function)
   const filteredInventory = inventory
     .filter((i) => i.name.toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) => {
       if (sortOrder === 'most') return b.inStock - a.inStock;
       if (sortOrder === 'least') return a.inStock - b.inStock;
+      // ✏️ EDIT: Sort by createdAt - date when item was added to system
       if (sortOrder === 'newest') return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      // ✏️ EDIT: Sort by createdAt - oldest items first
       if (sortOrder === 'oldest') return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
       return 0;
     });
 
+  // ✏️ EDIT: Original inline sorting logic for kitchen inventory
   const filteredKitchenInventory = inventory
     .filter((i) => i.name.toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) => {
       if (sortOrder === 'most') return b.openStock - a.openStock;
       if (sortOrder === 'least') return a.openStock - b.openStock;
+      // ✏️ EDIT: Sort by createdAt - date when item was added to system
       if (sortOrder === 'newest') return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      // ✏️ EDIT: Sort by createdAt - oldest items first
       if (sortOrder === 'oldest') return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
       return 0;
     });
 
+  // ✏️ EDIT: Original inline sorting logic for usage logs
   const filteredUsageLogs = usageLogs
     .filter((l) => l.itemName.toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) => {
       if (sortOrder === 'most') return b.quantityUsed - a.quantityUsed;
       if (sortOrder === 'least') return a.quantityUsed - b.quantityUsed;
+      // ✏️ EDIT: Sort by timestamp - when usage was recorded in system
       return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
     });
 
@@ -358,7 +528,9 @@ const InventoryPage = () => {
               key={tab}
               onClick={() => {
                 setActiveTab(tab);
-                setSortOrder(null);
+                // ✏️ EDIT: Reset to default sort when changing tabs
+                setSortType('Quantity');
+                setSortDirection('descending');
                 setSearch('');
               }}
               className={`px-6 py-3 text-sm font-semibold transition-all duration-300 ${
@@ -380,7 +552,9 @@ const InventoryPage = () => {
               <button
                 onClick={() => {
                   setInventorySubTab('General');
-                  setSortOrder(null);
+                  // ✏️ EDIT: Reset to default sort when changing subtabs
+                  setSortType('Quantity');
+                  setSortDirection('descending');
                   setSearch('');
                 }}
                 className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-300 ${
@@ -394,7 +568,9 @@ const InventoryPage = () => {
               <button
                 onClick={() => {
                   setInventorySubTab('Used');
-                  setSortOrder(null);
+                  // ✏️ EDIT: Reset to default sort when changing subtabs
+                  setSortType('Quantity');
+                  setSortDirection('descending');
                   setSearch('');
                 }}
                 className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-300 ${
@@ -417,21 +593,35 @@ const InventoryPage = () => {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
-              <select
-                className="border border-gray-200 rounded-xl px-4 py-2 bg-white/80 backdrop-blur-sm text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all duration-300"
-                value={sortOrder || ''}
-                onChange={(e) => setSortOrder(e.target.value || null)}
-              >
-                <option value="">Sort By...</option>
-                <option value="most">
-                  Most {inventorySubTab === 'General' ? 'Stock' : 'Quantity'}
-                </option>
-                <option value="least">
-                  Least {inventorySubTab === 'General' ? 'Stock' : 'Quantity'}
-                </option>
-                <option value="newest">Newest to Oldest</option>
-                <option value="oldest">Oldest to Newest</option>
-              </select>
+              {/* ✏️ EDIT: Clean button-based UI with original sorting function */}
+              <div className="flex items-center space-x-4">
+                <div className="flex items-center space-x-2 text-gray-700 font-bold">
+                  <span>Sort By:</span>
+                </div>
+                <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-lg">
+                  <button
+                    onClick={() => handleSortChange('Quantity')}
+                    className={`px-4 py-2 rounded-md font-bold transition-all ${
+                      sortType === 'Quantity'
+                        ? 'bg-blue-600 text-white shadow-md'
+                        : 'bg-transparent text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    Quantity {sortType === 'Quantity' && (sortDirection === 'ascending' ? '↑' : '↓')}
+                  </button>
+                  <button
+                    onClick={() => handleSortChange('Date')}
+                    className={`px-4 py-2 rounded-md font-bold transition-all ${
+                      sortType === 'Date'
+                        ? 'bg-blue-600 text-white shadow-md'
+                        : 'bg-transparent text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    {/* ✏️ EDIT: Changed label to "Added Date" for clarity */}
+                    Added Date {sortType === 'Date' && (sortDirection === 'ascending' ? '↑' : '↓')}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 
