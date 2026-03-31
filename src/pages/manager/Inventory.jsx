@@ -11,7 +11,7 @@ import {
   getUsageLogs,
   addHistoryLog,
 } from '../../services/mockDatabase';
-import { showNotification, evaluateInventoryAlert } from '../../services/notificationService';
+import { showNotification, evaluateInventoryAlert, checkAllExpirations } from '../../services/notificationService';
 
 // Helper function to get current user and role from session
 const getCurrentUserInfo = () => {
@@ -29,6 +29,8 @@ const InventoryPage = () => {
   const [menu, setMenu] = useState([]);
   const [recipes, setRecipes] = useState({});
   const [usageLogs, setUsageLogs] = useState([]);
+  const [menuRecipeWarnings, setMenuRecipeWarnings] = useState([]);
+  const [hasLoggedMissingRecipeWarning, setHasLoggedMissingRecipeWarning] = useState(false);
 
   const [search, setSearch] = useState('');
   // ✏️ EDIT: Button UI with separate sortType and sortDirection for clean interface
@@ -53,6 +55,7 @@ const InventoryPage = () => {
     measurementUnit: 'g',
     measurementQty: '1000',
     lowStockThreshold: '5',
+    expirationDate: '',
   });
 
   const [editingItem, setEditingItem] = useState(null);
@@ -65,6 +68,7 @@ const InventoryPage = () => {
     measurementQty: '',
     openStock: '',
     lowStockThreshold: '',
+    expirationDate: '',
   });
 
   const [selectedCategory, setSelectedCategory] = useState('Beverages');
@@ -90,6 +94,51 @@ const InventoryPage = () => {
     setMenu(menuData);
     setRecipes(recipeData);
     setUsageLogs(logData);
+
+    const missingRecipeItems = menuData.filter((menuItem) => {
+      const recipeRow = recipeData[menuItem.id];
+      return !recipeRow || !Array.isArray(recipeRow.ingredients) || recipeRow.ingredients.length === 0;
+    });
+    setMenuRecipeWarnings(missingRecipeItems);
+
+    if (missingRecipeItems.length > 0 && !hasLoggedMissingRecipeWarning) {
+      const warningMessage = `⚠️ ${missingRecipeItems.length} menu item${missingRecipeItems.length === 1 ? '' : 's'} are missing recipes. Add recipes to ensure inventory forecasting.`;
+      showNotification({
+        message: warningMessage,
+        type: 'warning',
+        category: 'MISSING_RECIPE',
+        itemName: 'Menu Recipe Check',
+        severity: 'medium',
+      });
+
+      try {
+        const now = new Date();
+        const { username, userRole } = getCurrentUserInfo();
+        await addHistoryLog({
+          type: 'Missing Recipe Warning',
+          description: `Missing recipes for menu item${missingRecipeItems.length === 1 ? '' : 's'}: ${missingRecipeItems.map(item => item.name).join(', ')}`,
+          user_name: username,
+          user: username,
+          role: userRole,
+          timestamp: now.toISOString(),
+          date: now.toISOString().split('T')[0],
+          time: now.toTimeString().split(' ')[0],
+        });
+        setHasLoggedMissingRecipeWarning(true);
+      } catch (error) {
+        console.error('[Inventory] Failed to log missing recipe warning:', error);
+      }
+    }
+
+    // Check expiration dates for all perishable items
+    try {
+      const expiredNotifications = checkAllExpirations(invData);
+      if (expiredNotifications.length > 0) {
+        console.log(`⏰ [Inventory Page] Found ${expiredNotifications.length} expired items`);
+      }
+    } catch (error) {
+      console.error('[Inventory] Error checking expirations:', error);
+    }
   };
 
   // ✏️ EDIT: Unified sort handler - toggles direction or switches type
@@ -222,6 +271,12 @@ const InventoryPage = () => {
       return;
     }
 
+    // For perishable items, check if expiration date is provided
+    if (addItemData.type === 'Perishable' && !addItemData.expirationDate) {
+      alert('Please provide an expiration date for perishable items.');
+      return;
+    }
+
     const newItem = {
       name: addItemData.name,
       inStock: parseInt(addItemData.stock, 10),
@@ -231,6 +286,8 @@ const InventoryPage = () => {
       measurementQty: parseInt(addItemData.measurementQty, 10) || 1,
       openStock: 0,
       lowStockThreshold: parseInt(addItemData.lowStockThreshold, 10) || 5,
+      // Add expiration_date for perishable items only
+      expirationDate: addItemData.type === 'Perishable' ? addItemData.expirationDate : null,
     };
 
     // DEBUG: Log the new item creation
@@ -238,6 +295,8 @@ const InventoryPage = () => {
       name: newItem.name,
       stock: newItem.inStock,
       threshold: newItem.lowStockThreshold,
+      type: newItem.type,
+      expirationDate: newItem.expirationDate || 'N/A',
     });
 
     await addInventoryItem(newItem);
@@ -273,9 +332,17 @@ const InventoryPage = () => {
     
     const now = new Date();
     const { username, userRole } = getCurrentUserInfo();
+    
+    // Build history description with expiration date if perishable
+    let historyDescription = `Added inventory item: ${addItemData.name} (Stock: ${addItemData.stock}, Cost: ${addItemData.cost}, Type: ${addItemData.type}`;
+    if (addItemData.type === 'Perishable' && addItemData.expirationDate) {
+      historyDescription += `, Expires: ${addItemData.expirationDate}`;
+    }
+    historyDescription += ')';
+    
     addHistoryLog({
       type: 'Inventory Change',
-      description: `Added inventory item: ${addItemData.name} (Stock: ${addItemData.stock}, Cost: ${addItemData.cost})`,
+      description: historyDescription,
       user_name: username,
       user: username,
       role: userRole,
@@ -297,6 +364,7 @@ const InventoryPage = () => {
       measurementUnit: 'g',
       measurementQty: '1000',
       lowStockThreshold: '5',
+      expirationDate: '',
     });
   };
 
@@ -311,6 +379,7 @@ const InventoryPage = () => {
       measurementQty: (item.measurementQty ?? '').toString(),
       openStock: (item.openStock ?? '').toString(),
       lowStockThreshold: (item.lowStockThreshold ?? 5).toString(),
+      expirationDate: item.expirationDate || '',
     });
   };
 
@@ -322,16 +391,27 @@ const InventoryPage = () => {
   const handleSaveEditItem = async () => {
     if (!editingItem) return;
 
+    // For perishable items, check if expiration date is provided
+    if (editFormData.type === 'Perishable' && !editFormData.expirationDate) {
+      alert('Please provide an expiration date for perishable items.');
+      return;
+    }
+
     // DEBUG: Store old stock value for comparison
     const oldStock = editingItem.inStock;
     const newStock = parseInt(editFormData.stock, 10) || 0;
     const newThreshold = parseInt(editFormData.lowStockThreshold, 10) || 5;
+    const oldExpirationDate = editingItem.expirationDate;
+    const newExpirationDate = editFormData.type === 'Perishable' ? editFormData.expirationDate : null;
 
     console.log('📝 [Editing Inventory Item]', {
       name: editFormData.name,
       oldStock,
       newStock,
       newThreshold,
+      type: editFormData.type,
+      oldExpiration: oldExpirationDate || 'N/A',
+      newExpiration: newExpirationDate || 'N/A',
       stockChanged: oldStock !== newStock,
     });
 
@@ -345,6 +425,8 @@ const InventoryPage = () => {
       measurementQty: parseInt(editFormData.measurementQty, 10) || 1,
       openStock: parseInt(editFormData.openStock, 10) || 0,
       lowStockThreshold: newThreshold,
+      // Add expiration_date for perishable items only
+      expirationDate: newExpirationDate,
     };
 
     // UPDATE the item in database
@@ -382,9 +464,34 @@ const InventoryPage = () => {
     // LOG the change to history
     const now = new Date();
     const { username, userRole } = getCurrentUserInfo();
+    
+    // Build history description with changes including expiration date
+    let historyDescription = `Edited inventory item: ${editFormData.name}`;
+    
+    // Track stock changes
+    if (oldStock !== newStock) {
+      historyDescription += ` (Stock: ${oldStock} → ${newStock}`;
+    } else {
+      historyDescription += ` (Stock: ${newStock}`;
+    }
+    
+    // Track cost changes
+    if (editingItem.cost !== parseFloat(editFormData.cost)) {
+      historyDescription += `, Cost: ${editingItem.cost} → ${editFormData.cost}`;
+    }
+    
+    // Track expiration date changes
+    if ((oldExpirationDate || newExpirationDate) && oldExpirationDate !== newExpirationDate) {
+      historyDescription += `, Expires: ${oldExpirationDate || 'N/A'} → ${newExpirationDate || 'N/A'}`;
+    } else if (newExpirationDate) {
+      historyDescription += `, Expires: ${newExpirationDate}`;
+    }
+    
+    historyDescription += ')';
+    
     addHistoryLog({
       type: 'Inventory Change',
-      description: `Edited inventory item: ${editFormData.name} (Stock: ${oldStock} → ${newStock}, Cost: ${editFormData.cost})`,
+      description: historyDescription,
       user_name: username,
       user: username,
       role: userRole,
@@ -404,12 +511,14 @@ const InventoryPage = () => {
       measurementQty: '',
       openStock: '',
       lowStockThreshold: '',
+      expirationDate: '',
     });
   };
 
   const handleOpenAutoModal = (dish) => {
-    setSelectedDish(dish);
-    setCurrentRecipe(recipes[dish.id] ? [...recipes[dish.id]] : []);
+    const recipeRow = recipes[dish.id];
+    setSelectedDish({ ...dish, recipeId: recipeRow?.id ?? null });
+    setCurrentRecipe(recipeRow?.ingredients ?? []);
     setShowAutoModal(true);
     setRecipeSearch('');
   };
@@ -443,7 +552,11 @@ const InventoryPage = () => {
 
   const handleSaveRecipe = async () => {
     if (!selectedDish) return;
-    await saveRecipe(selectedDish.id, currentRecipe);
+    const recipePayload = {
+      id: selectedDish.recipeId || undefined,
+      ingredients: currentRecipe,
+    };
+    await saveRecipe(selectedDish.id, recipePayload);
     
     const now = new Date();
     const { username, userRole } = getCurrentUserInfo();
@@ -625,6 +738,15 @@ const InventoryPage = () => {
             </div>
           </div>
 
+          {menuRecipeWarnings.length > 0 && (
+            <div className="rounded-xl border border-yellow-300 bg-yellow-50 text-yellow-900 px-5 py-4 mb-4">
+              <div className="font-semibold">Menu Recipe Warning</div>
+              <div className="text-sm mt-1">
+                {menuRecipeWarnings.length} menu item{menuRecipeWarnings.length === 1 ? '' : 's'} currently have no recipe assigned. Add recipes to these menu items to keep inventory forecasting accurate.
+              </div>
+            </div>
+          )}
+
           {inventorySubTab === 'General' && (
             <div className="border border-gray-200 rounded-xl overflow-hidden bg-white/80 backdrop-blur-sm shadow-lg">
               <table className="w-full text-left text-sm">
@@ -633,6 +755,7 @@ const InventoryPage = () => {
                     <th className="px-6 py-4 font-semibold text-gray-700">Item Name</th>
                     <th className="px-6 py-4 text-center font-semibold text-gray-700">Packs</th>
                     <th className="px-6 py-4 text-center font-semibold text-gray-700">Alert At</th>
+                    <th className="px-6 py-4 text-center font-semibold text-gray-700">Expiration Date</th>
                     <th className="px-6 py-4 text-center font-semibold text-gray-700">Amount per Pack</th>
                     <th className="px-6 py-4 text-center font-semibold text-gray-700">Unit Cost</th>
                     <th className="px-6 py-4 font-semibold text-gray-700">Type</th>
@@ -652,6 +775,9 @@ const InventoryPage = () => {
                       </td>
                       <td className="px-6 py-4 text-center text-gray-500 text-xs">
                         {item.lowStockThreshold}
+                      </td>
+                      <td className="px-6 py-4 text-center text-gray-700">
+                        {item.expirationDate || ''}
                       </td>
                       <td className="px-6 py-4 text-center text-gray-600">
                         {item.measurementQty} {item.measurementUnit}
@@ -909,6 +1035,23 @@ const InventoryPage = () => {
                     <option value="Supplies">Supplies</option>
                   </select>
                 </div>
+                
+                {/* Expiration Date - Only show for Perishable items */}
+                {addItemData.type === 'Perishable' && (
+                  <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
+                    <label className="block text-sm font-semibold mb-2 text-orange-900">
+                      📅 Expiration Date <span className="text-red-600">*</span>
+                    </label>
+                    <input
+                      name="expirationDate"
+                      type="date"
+                      value={addItemData.expirationDate}
+                      onChange={handleAddItemChange}
+                      className="w-full border rounded-lg px-4 py-3"
+                      required
+                    />
+                  </div>
+                )}
               </div>
               <div className="flex gap-6 justify-center mt-6">
                 <button
@@ -1014,6 +1157,24 @@ const InventoryPage = () => {
                         </select>
                       </div>
                     </div>
+
+                    {/* Expiration Date - Only for Perishable items */}
+                    {editFormData.type === 'Perishable' && (
+                      <div className="mb-3 bg-orange-50 border border-orange-200 rounded p-3">
+                        <label className="block text-xs font-semibold mb-1 text-orange-900">
+                          📅 Expiration Date <span className="text-red-600">*</span>
+                        </label>
+                        <input
+                          name="expirationDate"
+                          type="date"
+                          value={editFormData.expirationDate}
+                          onChange={handleEditFormChange}
+                          className="w-full border rounded p-2 text-sm"
+                          required
+                        />
+                      </div>
+                    )}
+
                     <div className="mt-2 flex justify-center">
                       <button
                         onClick={handleSaveEditItem}
@@ -1104,8 +1265,9 @@ const InventoryPage = () => {
             <div className="border rounded-xl overflow-hidden bg-white">
               {filteredMenuByCat.length > 0 ? (
                 filteredMenuByCat.map((dish) => {
-                  const hasRecipe = recipes[dish.id] && recipes[dish.id].length > 0;
-                  const ingredientCount = hasRecipe ? recipes[dish.id].length : 0;
+                  const recipeRow = recipes[dish.id];
+                  const hasRecipe = recipeRow && Array.isArray(recipeRow.ingredients) && recipeRow.ingredients.length > 0;
+                  const ingredientCount = hasRecipe ? recipeRow.ingredients.length : 0;
                   return (
                     <div
                       key={dish.id}

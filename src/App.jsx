@@ -1,6 +1,7 @@
 
 import React from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import ErrorBoundary from './components/ErrorBoundary';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import POS from './pages/employee/POS';
@@ -20,12 +21,14 @@ import AccessDenied from './pages/AccessDenied';
  * - Public routes: /, /access-denied
  * - Protected routes: Employee, Manager, Admin sections with explicit role requirements
  * - Each protected route uses ProtectedRoute wrapper for access validation
+ * - ErrorBoundary wraps all routes for graceful error handling
  */
 function App() {
   console.log('🚀 [App Initialized - Route Configuration Loaded]');
 
   return (
-    <BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
       <Routes>
         {/* 🔓 PUBLIC ROUTES - No authentication required */}
         <Route path="/" element={<Login />} />
@@ -139,7 +142,8 @@ function App() {
           />
         </Route>
       </Routes>
-    </BrowserRouter>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }
 

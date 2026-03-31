@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Navigate } from 'react-router-dom';
 import { validatePathAccess } from '../services/privilegeService';
+import { addHistoryLog } from '../services/databaseService';
 
 /**
  * ProtectedRoute Component
@@ -23,6 +24,29 @@ const ProtectedRoute = ({ element, requiredRole }) => {
   const currentPath = window.location.pathname;
   
   const accessValidation = validatePathAccess(currentPath);
+  const hasLoggedUnauthorizedAccess = useRef(false);
+
+  useEffect(() => {
+    if (accessValidation.hasAccess || hasLoggedUnauthorizedAccess.current) return;
+
+    hasLoggedUnauthorizedAccess.current = true;
+    const username = sessionStorage.getItem('username') || 'Unknown';
+    const role = sessionStorage.getItem('userRole') || 'Unauthenticated';
+    const now = new Date();
+    const timestamp = now.toISOString();
+    const date = timestamp.split('T')[0];
+    const time = now.toTimeString().split(' ')[0];
+
+    addHistoryLog({
+      type: 'Unauthorized Route Access',
+      description: `Unauthorized access attempt to ${currentPath} by ${username} (${role})`,
+      user: username,
+      role,
+      timestamp,
+      date,
+      time,
+    }).catch((error) => console.warn('[ProtectedRoute] Failed to log unauthorized access', error));
+  }, [accessValidation.hasAccess, currentPath]);
 
   // Log access decision
   console.log('🛡️ [Protected Route Validation]', {

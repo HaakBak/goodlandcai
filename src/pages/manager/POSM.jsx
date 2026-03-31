@@ -12,7 +12,36 @@ const POSM = () => {
   
   const [currentItem, setCurrentItem] = useState({});
   const [priceError, setPriceError] = useState('');
+  const [selectedSizeByItem, setSelectedSizeByItem] = useState({});
   const [serviceFees, setServiceFees] = useState({ dineIn: 3, takeout: 5 });
+  const sizeOrder = ['Small', 'Medium', 'Large'];
+
+  const getSelectedSize = (item) => {
+    if (!item.hasSizes || !item.sizes) return null;
+    return selectedSizeByItem[item.id] || (item.sizes.Medium ? 'Medium' : Object.keys(item.sizes)[0]);
+  };
+
+  const getNextSize = (current) => {
+    const index = sizeOrder.indexOf(current);
+    return sizeOrder[(index + 1 + sizeOrder.length) % sizeOrder.length] || 'Medium';
+  };
+
+  const getPrevSize = (current) => {
+    const index = sizeOrder.indexOf(current);
+    return sizeOrder[(index - 1 + sizeOrder.length) % sizeOrder.length] || 'Medium';
+  };
+
+  const getItemPriceDisplay = (item) => {
+    const selectedSize = getSelectedSize(item);
+    if (item.hasSizes && item.sizes?.[selectedSize]) {
+      return item.sizes[selectedSize];
+    }
+    return {
+      basePrice: item.basePrice,
+      VAT_fee: item.VAT_fee,
+      totalPrice: item.totalPrice,
+    };
+  };
 
   useEffect(() => {
     resetMenu();
@@ -23,20 +52,54 @@ const POSM = () => {
   const categories = ['Beverages', 'Main Dishes', 'Side Dish', 'Desserts'];
   const filteredMenu = menu.filter(m => m.category === selectedCategory);
 
+  const parseNumericValue = (value) => {
+    const number = typeof value === 'number' ? value : parseFloat(value);
+    return Number.isFinite(number) ? number : 0;
+  };
+
+  const getDefaultSizeObject = (sizes) => {
+    if (!sizes || typeof sizes !== 'object') return null;
+    const preferred = ['Medium', 'Small', 'Large'];
+    for (const key of preferred) {
+      if (sizes[key]) return sizes[key];
+    }
+    const keys = Object.keys(sizes).filter(k => sizes[k]);
+    return keys.length > 0 ? sizes[keys[0]] : null;
+  };
+
+  const isValidMenuItem = (item) => {
+    if (!item.name || item.name.trim() === '') return false;
+
+    if (item.hasSizes) {
+      if (!item.sizes || typeof item.sizes !== 'object') return false;
+      const sizeEntries = Object.values(item.sizes).filter(size => size && parseNumericValue(size.basePrice) > 0);
+      return sizeEntries.length > 0;
+    }
+
+    return item.basePrice !== undefined && item.basePrice !== null && !Number.isNaN(parseNumericValue(item.basePrice));
+  };
+
   const calculateVatAndTotal = (basePrice) => {
-    const base = parseFloat(basePrice) || 0;
-    const vat = parseFloat((base * 0.12).toFixed(2));
-    const total = parseFloat((base + vat).toFixed(2));
+    const base = parseNumericValue(basePrice);
+    const vat = parseNumericValue((base * 0.12).toFixed(2));
+    const total = parseNumericValue((base + vat).toFixed(2));
     return { base, vat, total };
   };
 
   const handleSave = async () => {
-    if (!currentItem.name || currentItem.basePrice === undefined) {
+    if (!isValidMenuItem(currentItem)) {
         alert('Please fill all required fields');
         return;
     }
 
-    const { base, vat, total } = calculateVatAndTotal(currentItem.basePrice);
+    const useSizePricing = currentItem.hasSizes && currentItem.sizes;
+    const selectedSize = useSizePricing
+      ? getDefaultSizeObject(currentItem.sizes)
+      : null;
+
+    const { base, vat, total } = selectedSize
+      ? { base: selectedSize.basePrice, vat: selectedSize.VAT_fee, total: selectedSize.totalPrice }
+      : calculateVatAndTotal(currentItem.basePrice);
 
     const itemToSave = {
       ...currentItem,
@@ -45,7 +108,7 @@ const POSM = () => {
       totalPrice: total,
       category: currentItem.category || selectedCategory,
       hasSizes: currentItem.hasSizes || false,
-      sizes: currentItem.hasSizes ? currentItem.sizes : undefined
+      sizes: currentItem.hasSizes ? currentItem.sizes : {}
     };
 
     let updatedMenu = [...menu];
@@ -69,8 +132,9 @@ const POSM = () => {
 
   const handleToggleSizes = (enabled) => {
     if (enabled) {
-      const base = parseFloat(currentItem.basePrice) || 0;
+      const base = parseNumericValue(currentItem.basePrice);
       // Pre-calculate suggested prices for S/M/L
+      // These sizes will OVERRIDE the base price in pricing calculations
       const s = calculateVatAndTotal(base * 0.8);
       const m = calculateVatAndTotal(base);
       const l = calculateVatAndTotal(base * 1.2);
@@ -78,20 +142,23 @@ const POSM = () => {
       setCurrentItem({
         ...currentItem,
         hasSizes: true,
+        basePrice: undefined,
         sizes: {
           Small: { basePrice: s.base, VAT_fee: s.vat, totalPrice: s.total },
           Medium: { basePrice: m.base, VAT_fee: m.vat, totalPrice: m.total },
           Large: { basePrice: l.base, VAT_fee: l.vat, totalPrice: l.total }
         }
       });
+      console.log('✅ [POSM] Drink sizes ENABLED - size prices will OVERRIDE base price in all POS calculations');
     } else {
       setCurrentItem({ ...currentItem, hasSizes: false, sizes: undefined });
+      console.log('❌ [POSM] Drink sizes DISABLED - base price will be used for all sizes');
     }
   };
 
   const updateSizeBasePrice = (size, newBase) => {
     if (!currentItem.sizes) return;
-    const { base, vat, total } = calculateVatAndTotal(newBase);
+    const { base, vat, total } = calculateVatAndTotal(parseNumericValue(newBase));
     setCurrentItem({
       ...currentItem,
       sizes: {
@@ -151,25 +218,61 @@ const POSM = () => {
             <h2 className="text-2xl font-bold mb-4">{selectedCategory}</h2>
             <div className="flex flex-wrap gap-4">
                 {filteredMenu.map(item => (
-                    <div key={item.id} className="w-48 h-48 border-2 rounded-xl flex flex-col items-center justify-between p-3 relative bg-white shadow-lg hover:shadow-xl transition-shadow">
+                    <div key={item.id} className="w-56 min-h-[19rem] border-2 rounded-3xl flex flex-col items-center p-4 relative bg-white shadow-lg hover:shadow-xl transition-shadow">
                         {/* Top Action Buttons */}
-                        <div className="w-full flex justify-between items-center mb-2">
-                          <button onClick={() => { setCurrentItem({...item}); setShowEditModal(true); }} className="bg-blue-500 hover:bg-blue-600 text-white px-2 py-1 rounded text-[10px] font-bold transition-colors">EDIT</button>
-                          <button onClick={() => { setCurrentItem(item); setShowDeleteModal(true); }} className="bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded text-[10px] font-bold transition-colors">DELETE</button>
+                        <div className="w-full flex justify-between items-center mb-3">
+                          <button onClick={() => { setCurrentItem({...item}); setShowEditModal(true); }} className="text-white bg-blue-500 hover:bg-blue-600 px-2 py-1 rounded text-[10px] font-bold transition-colors">EDIT</button>
+                          <button onClick={() => { setCurrentItem(item); setShowDeleteModal(true); }} className="text-white bg-red-500 hover:bg-red-600 px-2 py-1 rounded text-[10px] font-bold transition-colors">DELETE</button>
                         </div>
-                        
+
                         {/* Item Name */}
-                        <div className="text-center font-bold text-gray-800 text-sm truncate w-full flex-1 flex items-center justify-center">{item.name}</div>
-                        
-                        {/* Multi-Size Badge */}
-                        {item.hasSizes && <span className="text-[9px] bg-blue-100 text-blue-600 px-2 rounded-full font-black mb-2">MULTI-SIZE</span>}
-                        
-                        {/* Price Section */}
-                        <div className="w-full border-t pt-2">
-                          <div className="text-sm font-semibold text-green-600 text-center">₱ {item.basePrice?.toFixed(2) || item.totalPrice?.toFixed(2)}</div>
-                          <div className="text-xs text-gray-500 text-center">VAT: ₱ {item.VAT_fee?.toFixed(2)}</div>
-                          <div className="text-sm font-bold text-green-700 text-center bg-green-50 rounded px-2 py-1 mt-1">₱ {item.totalPrice?.toFixed(2)}</div>
+                        <div className="text-center font-bold text-gray-800 text-base leading-snug min-h-[3rem] mb-3 px-2 flex items-center justify-center whitespace-normal break-words">
+                          {item.name}
                         </div>
+
+                        {/* Size Controls */}
+                        {item.hasSizes && selectedCategory === 'Beverages' && (
+                          <div className="w-full mb-4 flex items-center justify-center gap-2 text-[11px] font-bold text-blue-700">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedSizeByItem(prev => ({ ...prev, [item.id]: getPrevSize(getSelectedSize(item)) }))}
+                              className="w-8 h-8 rounded-full bg-transparent text-blue-600 hover:bg-blue-50 focus:outline-none"
+                            >
+                              ←
+                            </button>
+                            <div className="px-3 py-1 rounded-full bg-blue-50 text-center uppercase tracking-wide">
+                              {getSelectedSize(item) || 'Medium'}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedSizeByItem(prev => ({ ...prev, [item.id]: getNextSize(getSelectedSize(item)) }))}
+                              className="w-8 h-8 rounded-full bg-transparent text-blue-600 hover:bg-blue-50 focus:outline-none"
+                            >
+                              →
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Price Section */}
+                        <div className="w-full mb-2">
+                          {(() => {
+                            const display = getItemPriceDisplay(item);
+                            return (
+                              <>
+                                <div className="text-base font-bold text-green-600 text-center">₱ {display.basePrice?.toFixed(2) || display.totalPrice?.toFixed(2)}</div>
+                                <div className="text-[11px] text-gray-500 text-center">VAT: ₱ {display.VAT_fee?.toFixed(2)}</div>
+                                <div className="text-sm font-bold text-green-700 text-center bg-green-50 rounded-full px-3 py-1 mt-2">₱ {display.totalPrice?.toFixed(2)}</div>
+                              </>
+                            );
+                          })()}
+                        </div>
+
+                        {/* Multi-Size Badge - Only for Beverages with sizes enabled */}
+                        {/*item.hasSizes && selectedCategory === 'Beverages' && (
+                          <span className="text-[10px] px-3 py-1 rounded-full bg-gradient-to-r from-blue-500 to-cyan-500 text-white font-black shadow-md">
+                            🔷 SIZES ENABLED
+                          </span>
+                        )*/}
                     </div>
                 ))}
                 <button onClick={() => { setCurrentItem({ category: selectedCategory, basePrice: 0 }); setShowAddModal(true); }} className="w-48 h-48 flex items-center justify-center border-2 border-dashed border-gray-300 rounded-xl hover:border-blue-500 hover:text-blue-500 transition-all text-4xl">+</button>
@@ -185,7 +288,13 @@ const POSM = () => {
                     <input className="w-full border rounded-lg p-3 mb-4 font-bold" value={currentItem.name || ''} onChange={e => setCurrentItem({...currentItem, name: e.target.value})} placeholder="e.g. Caramel Macchiato" />
 
                     <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-1">Base Price (₱)</label>
-                    <input type="number" className="w-full border rounded-lg p-3 mb-4 font-bold" value={currentItem.basePrice || ''} onChange={e => setCurrentItem({...currentItem, basePrice: parseFloat(e.target.value)})} />
+                    <input
+                      type="number"
+                      disabled={currentItem.hasSizes}
+                      className={`w-full border rounded-lg p-3 mb-4 font-bold ${currentItem.hasSizes ? 'bg-gray-100 text-gray-500' : ''}`}
+                      value={currentItem.basePrice || ''}
+                      onChange={e => setCurrentItem({...currentItem, basePrice: e.target.value === '' ? undefined : parseNumericValue(e.target.value)})}
+                    />
 
                     {selectedCategory === 'Beverages' && (
                       <div className="p-4 bg-blue-50 rounded-xl border border-blue-100 mb-6">

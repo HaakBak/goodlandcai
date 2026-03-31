@@ -13,8 +13,9 @@ const Sidebar = ({ role, historyData = [], username = 'Manager' }) => {
     
     // Get the actual username from unified sessionStorage key
     const actualUsername = sessionStorage.getItem('username') || 'Unknown';
+    const actualUserId = sessionStorage.getItem('userId') || null;
     
-    console.log('🚪 [User Logout Initiated]', { role, username: actualUsername });
+    console.log('🚪 [User Logout Initiated]', { role, username: actualUsername, userId: actualUserId });
     
     // 🔐 SECURITY: Clear user session and stored roles from sessionStorage
     clearUserSession();
@@ -40,6 +41,7 @@ const Sidebar = ({ role, historyData = [], username = 'Manager' }) => {
     }
     
     await addHistoryLog({
+      userId: actualUserId,
       type: logoutType,
       description: description,
       user: actualUsername,

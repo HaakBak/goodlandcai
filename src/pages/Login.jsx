@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getUsers, saveUser, addHistoryLog } from '../services/mockDatabase';
+import { getSupabaseClient, getUserProfileByUsername, addHistoryLog, saveUser } from '../services/databaseService';
 import { User as UserIcon, Lock, Mail, ArrowRight } from 'lucide-react';
 import logo from '/src/assets/logo.png';
 
@@ -9,6 +9,7 @@ import logo from '/src/assets/logo.png';
 const EmployeeLogin = ({ onBack }) => {
   const navigate = useNavigate();
   const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isSignup, setIsSignup] = useState(false);
@@ -23,44 +24,102 @@ const EmployeeLogin = ({ onBack }) => {
       return;
     }
 
-    const now = new Date();
-    const timestamp = now.toISOString();
-    const date = now.toISOString().split('T')[0];
-    const time = now.toTimeString().split(' ')[0];
-
-    let users = await getUsers();
-    if (!Array.isArray(users)) users = [];
-    
-    const userExists = users.find(u => u.username === username);
-    const user = userExists && userExists.password === password ? userExists : null;
-
-    if (user && user.role === 'Employee') {
-      console.log('✅ [Employee Login Success]', { username: user.username });
-      sessionStorage.setItem('userRole', user.role);
-      sessionStorage.setItem('username', user.username);
+    try {
+      const supabase = getSupabaseClient();
       
-      addHistoryLog({
+      if (!supabase) {
+        setError('System offline. Please check your connection.');
+        console.error('[Auth] Supabase client not available');
+        return;
+      }
+
+      // Attempt Supabase Auth sign-in using email format
+      const email = `${username}@goodlandcafe.local`;
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email,
+        password
+      });
+
+      if (authError) {
+        console.error('[Auth] Sign-in error:', authError);
+        if (authError.message.includes('Invalid login credentials')) {
+          setError('Incorrect username or password. Please try again.');
+        } else {
+          setError(`Login failed: ${authError.message}`);
+        }
+        return;
+      }
+
+      // Auth successful - fetch user profile to get role
+      const userProfile = await getUserProfileByUsername(username);
+      
+      if (!userProfile) {
+        setError('User profile not found. Contact administrator.');
+        await supabase.auth.signOut();
+        return;
+      }
+
+      // Validate role for this login path (Employee only)
+      if (userProfile.role !== 'Employee') {
+        const now = new Date();
+        const timestamp = now.toISOString();
+        const date = timestamp.split('T')[0];
+        const time = now.toTimeString().split(' ')[0];
+
+        await addHistoryLog({
+          type: 'Unauthorized Login Attempt',
+          description: `Employee login form used by ${username} with actual role ${userProfile.role}`,
+          user: username,
+          role: userProfile.role,
+          timestamp,
+          date,
+          time,
+        });
+
+        setError(`This is not an employee account. Please use the ${userProfile.role} login.`);
+        await supabase.auth.signOut();
+        return;
+      }
+
+      // Ensure auth role metadata is synced for Supabase RLS
+      if (authData.user) {
+        const { error: metadataError } = await supabase.auth.updateUser({
+          data: { role: 'Employee', username }
+        });
+        if (metadataError) {
+          console.warn('[Auth] Failed to sync role metadata for employee login:', metadataError);
+        }
+      }
+
+      // Store session information
+      sessionStorage.setItem('userRole', 'Employee');
+      sessionStorage.setItem('username', username);
+      sessionStorage.setItem('userId', userProfile.id);
+      sessionStorage.setItem('supabaseSessionToken', authData.session?.access_token || '');
+
+      console.log('✅ [Employee Login Success]', { username, role: 'Employee' });
+
+      // Log history entry
+      const now = new Date();
+      const timestamp = now.toISOString();
+      const date = now.toISOString().split('T')[0];
+      const time = now.toTimeString().split(' ')[0];
+
+      await addHistoryLog({
         type: 'Employee Login',
-        description: `Employee ${user.username} logged into POS system`,
-        user: user.username,
-        role: user.role,
+        description: `Employee ${username} logged into POS system`,
+        user: username,
+        role: 'Employee',
         timestamp,
         date,
         time
       });
-      
+
       navigate('/employee/pos');
-    } else {
-      const newAttempts = { ...loginAttempts, [username]: (loginAttempts[username] || 0) + 1 };
-      setLoginAttempts(newAttempts);
-      
-      if (!userExists) {
-        setError('Employee account not found. Please sign up or check your username.');
-      } else if (user && user.role !== 'Employee') {
-        setError('This is not an employee account. Please use the Manager login.');
-      } else {
-        setError('Incorrect password. Please try again.');
-      }
+
+    } catch (err) {
+      console.error('[Auth] Unexpected error during login:', err);
+      setError('An unexpected error occurred. Please try again.');
     }
   };
 
@@ -68,62 +127,108 @@ const EmployeeLogin = ({ onBack }) => {
     e.preventDefault();
     setError('');
 
-    if (!username || !password) {
+    if (!username || !email || !password) {
       setError('Please fill in all fields');
       return;
     }
 
-    let users = await getUsers();
-    if (!Array.isArray(users)) users = [];
-    
-    if (users.find(u => u.username === username)) {
-      setError('Username already exists');
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters');
       return;
     }
 
-    const newUser = {
-      id: crypto.randomUUID(),
-      username,
-      email: `${username}@employee.com`,
-      password,
-      role: 'Employee',
-      createdAt: new Date().toISOString()
-    };
+    try {
+      const supabase = getSupabaseClient();
+      
+      if (!supabase) {
+        setError('System offline. Cannot create account now.');
+        return;
+      }
 
-    await saveUser(newUser);
-    
-    const now = new Date();
-    const timestamp = now.toISOString();
-    const date = timestamp.split('T')[0];
-    const time = now.toTimeString().split(' ')[0];
-    
-    console.log('✅ [Employee Account Created]', { username });
-    
-    addHistoryLog({
-      type: 'User Signup',
-      description: `New Employee account created: ${username}`,
-      user: newUser.username,
-      role: 'Employee',
-      timestamp,
-      date,
-      time
-    });
-    
-    // Auto-login
-    sessionStorage.setItem('userRole', 'Employee');
-    sessionStorage.setItem('username', newUser.username);
-    
-    addHistoryLog({
-      type: 'Employee Login',
-      description: `Employee ${username} logged into POS system`,
-      user: newUser.username,
-      role: 'Employee',
-      timestamp,
-      date,
-      time
-    });
-    
-    navigate('/employee/pos');
+      // Check if user already exists
+      const existingUser = await getUserProfileByUsername(username);
+      if (existingUser) {
+        setError('Username already exists. Please choose another.');
+        return;
+      }
+
+      // Sign up new user via Supabase Auth using internal email format
+      // This avoids rate limiting on external domains (Gmail, Yahoo, etc.)
+      const authEmail = `${username}@goodlandcafe.local`;
+      const { data: authData, error: signUpError } = await supabase.auth.signUp({
+        email: authEmail,
+        password,
+        options: {
+          data: {
+            username: username,
+            role: 'Employee',
+            userProvidedEmail: email  // Store user's actual email for reference
+          }
+        }
+      });
+
+      if (signUpError) {
+        console.error('[Auth] Sign-up error:', signUpError);
+        setError(`Sign-up failed: ${signUpError.message}`);
+        return;
+      }
+
+      if (!authData.user || !authData.user.id) {
+        setError('Failed to create account. Please try again.');
+        return;
+      }
+
+      await saveUser({
+        id: authData.user.id,
+        username,
+        password_hash: 'SUPABASE_AUTH',
+        email,
+        role: 'Employee',
+        status: 'active',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+
+      console.log('✅ [Employee Account Created]', { username });
+
+      const now = new Date();
+      const timestamp = now.toISOString();
+      const date = timestamp.split('T')[0];
+      const time = now.toTimeString().split(' ')[0];
+
+      // Log signup event
+      await addHistoryLog({
+        type: 'User Signup',
+        description: `New Employee account created: ${username}`,
+        user: username,
+        role: 'Employee',
+        timestamp,
+        date,
+        time
+      });
+
+      // Auto-login after signup
+      sessionStorage.setItem('userRole', 'Employee');
+      sessionStorage.setItem('username', username);
+      sessionStorage.setItem('userId', authData.user.id);
+      sessionStorage.setItem('supabaseSessionToken', authData.session?.access_token || '');
+
+      await addHistoryLog({
+        type: 'Employee Login',
+        description: `New employee ${username} logged into POS system`,
+        user: username,
+        role: 'Employee',
+        timestamp,
+        date,
+        time
+      });
+
+      navigate('/employee/pos');
+
+    } catch (err) {
+      console.error('[Auth] Unexpected error during signup:', err);
+      setError('An unexpected error occurred during signup.');
+    }
   };
 
   return (
@@ -157,6 +262,20 @@ const EmployeeLogin = ({ onBack }) => {
             />
           </div>
 
+          {isSignup && (
+            <div className="relative">
+              <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+              <input 
+                type="email" 
+                placeholder="Email Address"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full pl-12 pr-4 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-green-600 focus:ring-0 transition-all text-lg outline-none"
+                required
+              />
+            </div>
+          )}
+
           <div className="relative">
             <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
             <input 
@@ -173,7 +292,10 @@ const EmployeeLogin = ({ onBack }) => {
         <div className="text-center">
           <button 
             type="button"
-            onClick={() => setIsSignup(!isSignup)}
+            onClick={() => {
+              setIsSignup(!isSignup);
+              setEmail('');
+            }}
             className="text-gray-600 hover:text-green-700 font-semibold transition-colors cursor-pointer"
           >
             {isSignup ? 'Already have an account? Login' : 'Don\'t have an account? Sign up'}
@@ -218,47 +340,106 @@ const ManagerLogin = ({ onBack }) => {
       return;
     }
 
-    const now = new Date();
-    const timestamp = now.toISOString();
-    const date = now.toISOString().split('T')[0];
-    const time = now.toTimeString().split(' ')[0];
-
-    let users = await getUsers();
-    if (!Array.isArray(users)) users = [];
-    
-    const userExists = users.find(u => u.username === username);
-    const user = userExists && userExists.password === password ? userExists : null;
-
-    if (user && (user.role === 'Manager' || user.role === 'Administrator')) {
-      console.log('✅ [Manager/Admin Login Success]', { username: user.username, role: user.role });
-      sessionStorage.setItem('userRole', user.role);
-      sessionStorage.setItem('username', user.username);
+    try {
+      const supabase = getSupabaseClient();
       
-      const loginType = user.role === 'Administrator' ? 'Administrator Login' : 'Manager Login';
-      const destination = user.role === 'Administrator' ? '/admin' : '/manager/dashboard';
+      if (!supabase) {
+        setError('System offline. Please check your connection.');
+        console.error('[Auth] Supabase client not available');
+        return;
+      }
+
+      // Attempt Supabase Auth sign-in using email format
+      const email = `${username}@goodlandcafe.local`;
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email,
+        password
+      });
+
+      if (authError) {
+        console.error('[Auth] Sign-in error:', authError);
+        if (authError.message.includes('Invalid login credentials')) {
+          setError('Incorrect username or password. Please try again.');
+        } else {
+          setError(`Login failed: ${authError.message}`);
+        }
+        return;
+      }
+
+      // Auth successful - fetch user profile to get role
+      const userProfile = await getUserProfileByUsername(username);
       
-      addHistoryLog({
+      if (!userProfile) {
+        setError('User profile not found. Contact administrator.');
+        await supabase.auth.signOut();
+        return;
+      }
+
+      // Validate role (must be Manager or Administrator)
+      if (userProfile.role !== 'Manager' && userProfile.role !== 'Administrator') {
+        const now = new Date();
+        const timestamp = now.toISOString();
+        const date = timestamp.split('T')[0];
+        const time = now.toTimeString().split(' ')[0];
+
+        await addHistoryLog({
+          type: 'Unauthorized Login Attempt',
+          description: `Manager/Admin login form used by ${username} with actual role ${userProfile.role}`,
+          user: username,
+          role: userProfile.role,
+          timestamp,
+          date,
+          time,
+        });
+
+        setError(`This is not a manager account. Please use the Employee login.`);
+        await supabase.auth.signOut();
+        return;
+      }
+
+      // Ensure auth role metadata is synced for Supabase RLS
+      if (authData.user) {
+        const { error: metadataError } = await supabase.auth.updateUser({
+          data: { role: userProfile.role, username }
+        });
+        if (metadataError) {
+          console.warn('[Auth] Failed to sync role metadata for manager/admin login:', metadataError);
+        }
+      }
+
+      // Store session information
+      sessionStorage.setItem('userRole', userProfile.role);
+      sessionStorage.setItem('username', username);
+      sessionStorage.setItem('userId', userProfile.id);
+      sessionStorage.setItem('supabaseSessionToken', authData.session?.access_token || '');
+
+      console.log('✅ [Manager/Admin Login Success]', { username, role: userProfile.role });
+
+      // Determine destination based on role
+      const loginType = userProfile.role === 'Administrator' ? 'Administrator Login' : 'Manager Login';
+      const destination = userProfile.role === 'Administrator' ? '/admin' : '/manager/dashboard';
+
+      // Log history entry
+      const now = new Date();
+      const timestamp = now.toISOString();
+      const date = now.toISOString().split('T')[0];
+      const time = now.toTimeString().split(' ')[0];
+
+      await addHistoryLog({
         type: loginType,
-        description: `${user.role} ${user.username} logged in`,
-        user: user.username,
-        role: user.role,
+        description: `${userProfile.role} ${username} logged in`,
+        user: username,
+        role: userProfile.role,
         timestamp,
         date,
         time
       });
       
       navigate(destination);
-    } else {
-      const newAttempts = { ...loginAttempts, [username]: (loginAttempts[username] || 0) + 1 };
-      setLoginAttempts(newAttempts);
-      
-      if (!userExists) {
-        setError('Manager account not found. Please sign up or check your username.');
-      } else if (user && user.role !== 'Manager' && user.role !== 'Administrator') {
-        setError('This is not a manager account. Please use the Employee login.');
-      } else {
-        setError('Incorrect password. Please try again.');
-      }
+
+    } catch (err) {
+      console.error('[Auth] Unexpected error during login:', err);
+      setError('An unexpected error occurred. Please try again.');
     }
   };
 
@@ -271,62 +452,103 @@ const ManagerLogin = ({ onBack }) => {
       return;
     }
 
-    let users = await getUsers();
-    if (!Array.isArray(users)) users = [];
-    
-    if (users.find(u => u.username === username)) {
-      setError('Username already exists');
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters');
       return;
     }
 
-    if (users.find(u => u.email === email)) {
-      setError('Email already registered');
-      return;
+    try {
+      const supabase = getSupabaseClient();
+      
+      if (!supabase) {
+        setError('System offline. Cannot create account now.');
+        return;
+      }
+
+      // Check if user already exists by username
+      const existingUser = await getUserProfileByUsername(username);
+      if (existingUser) {
+        setError('Username already exists. Please choose another.');
+        return;
+      }
+
+      // Sign up new user via Supabase Auth using internal email format
+      // This avoids rate limiting on external domains (Gmail, Yahoo, etc.)
+      const authEmail = `${username}@goodlandcafe.local`;
+      const { data: authData, error: signUpError } = await supabase.auth.signUp({
+        email: authEmail,
+        password,
+        options: {
+          data: {
+            username: username,
+            role: 'Manager',
+            userProvidedEmail: email  // Store user's actual email for reference
+          }
+        }
+      });
+
+      if (signUpError) {
+        console.error('[Auth] Sign-up error:', signUpError);
+        setError(`Sign-up failed: ${signUpError.message}`);
+        return;
+      }
+
+      if (!authData.user || !authData.user.id) {
+        setError('Failed to create account. Please try again.');
+        return;
+      }
+
+      await saveUser({
+        id: authData.user.id,
+        username,
+        password_hash: 'SUPABASE_AUTH',
+        email,
+        role: 'Manager',
+        status: 'active',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+
+      console.log('✅ [Manager Account Created]', { username });
+
+      const now = new Date();
+      const timestamp = now.toISOString();
+      const date = timestamp.split('T')[0];
+      const time = now.toTimeString().split(' ')[0];
+
+      // Log signup event
+      await addHistoryLog({
+        type: 'User Signup',
+        description: `New Manager account created: ${username}`,
+        user: username,
+        role: 'Manager',
+        timestamp,
+        date,
+        time
+      });
+
+      // Auto-login after signup
+      sessionStorage.setItem('userRole', 'Manager');
+      sessionStorage.setItem('username', username);
+      sessionStorage.setItem('userId', authData.user.id);
+      sessionStorage.setItem('supabaseSessionToken', authData.session?.access_token || '');
+
+      await addHistoryLog({
+        type: 'Manager Login',
+        description: `Manager ${username} logged in`,
+        user: username,
+        role: 'Manager',
+        timestamp,
+        date,
+        time
+      });
+
+      navigate('/manager/dashboard');
+
+    } catch (err) {
+      console.error('[Auth] Unexpected error during signup:', err);
+      setError('An unexpected error occurred during signup.');
     }
-
-    const newUser = {
-      id: crypto.randomUUID(),
-      username,
-      email,
-      password,
-      role: 'Manager',
-      createdAt: new Date().toISOString()
-    };
-
-    await saveUser(newUser);
-    
-    const now = new Date();
-    const timestamp = now.toISOString();
-    const date = timestamp.split('T')[0];
-    const time = now.toTimeString().split(' ')[0];
-    
-    console.log('✅ [Manager Account Created]', { username });
-    
-    addHistoryLog({
-      type: 'User Signup',
-      description: `New Manager account created: ${username}`,
-      user: newUser.username,
-      role: 'Manager',
-      timestamp,
-      date,
-      time
-    });
-    
-    // Auto-login
-    sessionStorage.setItem('userRole', 'Manager');
-    sessionStorage.setItem('username', newUser.username);
-    
-    addHistoryLog({
-      type: 'Manager Login',
-      description: `Manager ${username} logged in`,
-      user: newUser.username,
-      role: 'Manager',
-      timestamp,
-      date,
-      time
-    });
-    
-    navigate('/manager/dashboard');
   };
 
   return (

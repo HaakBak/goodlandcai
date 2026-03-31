@@ -83,6 +83,31 @@ const ManagerHistory = () => {
     }).join(', ');
   };
 
+  const flattenSearchableValue = (value) => {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+    if (Array.isArray(value)) {
+      return value.map(flattenSearchableValue).join(' ');
+    }
+    if (typeof value === 'object') {
+      return Object.values(value).map(flattenSearchableValue).join(' ');
+    }
+    return '';
+  };
+
+  const normalizeTerm = (value) => String(value || '').toLowerCase();
+
+  const transactionMatchesSearch = (txn, term) => {
+    if (!term) return true;
+    const searchable = flattenSearchableValue({
+      ...txn,
+      items: formatItems(txn.items),
+    }).toLowerCase();
+    return searchable.includes(term);
+  };
+
   // Generic comparator function - handles ascending/descending direction
   const createComparator = (direction) => (comparison) => {
     return direction === 'ascending' ? comparison : -comparison;
@@ -116,12 +141,8 @@ const ManagerHistory = () => {
   };
 
   // Search filter
-  const searchFiltered = transactions.filter(txn => {
-    const items = formatItems(txn.items).toLowerCase();
-    const employeeId = (txn.employeeId || '').toLowerCase();
-    return items.includes(searchTerm.toLowerCase()) || 
-           employeeId.includes(searchTerm.toLowerCase());
-  });
+  const normalizedSearchTerm = normalizeTerm(searchTerm);
+  const searchFiltered = transactions.filter(txn => transactionMatchesSearch(txn, normalizedSearchTerm));
 
   // Unified sorting function - applies sorting based on filter type and direction
   const applySorting = (data, type, direction) => {

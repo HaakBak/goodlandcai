@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { getTransactions, getNotifications } from '../../services/mockDatabase';
-import { calculateCategoryRanking, calculateForecasting, calculateItemForecast, calculateRestockingNeeds } from '../../utils/mlEngine';
+import { getTransactions, getNotifications, getInventory, getRecipes } from '../../services/mockDatabase';
+import { checkAllExpirations } from '../../services/notificationService';
+import rawTransactionsCsv from '../../../data/transactions.csv?raw';
+import { calculateCategoryRanking, calculateItemForecast, calculateRestockingNeeds, forecastIngredientDemand, mergeTransactions, parseCsvTransactions } from '../../utils/mlEngine';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, Legend
@@ -8,6 +10,8 @@ import {
 
 const Dashboard = () => {
   const [transactions, setTransactions] = useState([]);
+  const [recipes, setRecipes] = useState({});
+  const [inventory, setInventory] = useState([]);
   
   // Metrics - daily orders and sales tracking
   const [todaysOrders, setTodaysOrders] = useState(0);
@@ -31,27 +35,62 @@ const Dashboard = () => {
   const [notifications, setNotifications] = useState([]);
 
   useEffect(() => {
+    const dedupeNotifications = (notes) => {
+      const seen = new Set();
+      return notes.filter((note) => {
+        const key = `${note.message}|${note.category}|${note.itemName}|${note.date}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    };
+
     const loadData = async () => {
-        const data = await getTransactions();
-        setTransactions(data);
+        const [data, notifs, inventoryData, recipeData] = await Promise.all([
+          getTransactions(),
+          getNotifications(),
+          getInventory(),
+          getRecipes(),
+        ]);
+
+        const historicalTransactions = parseCsvTransactions(rawTransactionsCsv);
+        const mergedTx = mergeTransactions(historicalTransactions, data);
+
+        setTransactions(mergedTx);
+        setNotifications(dedupeNotifications(notifs).slice(0, 5));
+        setInventory(inventoryData);
+        setRecipes(recipeData);
 
         // Load daily metrics (orders completed & total sales) - automatically resets at midnight
         const today = new Date().toISOString().split('T')[0];
-        const todaysTransactions = data.filter(t => t.timestamp && t.timestamp.startsWith(today));
+        const todaysTransactions = mergedTx.filter(t => t.timestamp && t.timestamp.startsWith(today));
         const completedOrders = todaysTransactions.length;
         const dailySales = todaysTransactions.reduce((sum, t) => sum + (t.totalAmount || t.total || 0), 0);
         setTodaysOrders(completedOrders);
         setDailySales(dailySales);
 
-        // Load Notifications
-        const notifs = await getNotifications();
-        setNotifications(notifs.slice(0, 5)); // Show top 5 recent
+        // Check expiration dates for all perishable items
+        try {
+          const expiredNotifications = checkAllExpirations(inventoryData);
+          console.log(`📦 [Manager Dashboard] Checked ${inventoryData.length} items, found ${expiredNotifications.length} expired`);
+        } catch (error) {
+          console.error('[Dashboard] Error checking expirations:', error);
+        }
     };
     loadData();
 
     // Listen for new toasts to update list immediately
-    const handleUpdate = () => {
-        getNotifications().then(n => setNotifications(n.slice(0, 5)));
+    const handleUpdate = async (event) => {
+        if (event?.detail) {
+            setNotifications(prev => dedupeNotifications([event.detail, ...prev]).slice(0, 5));
+        }
+
+        try {
+            const n = await getNotifications();
+            setNotifications(dedupeNotifications(n).slice(0, 5));
+        } catch (error) {
+            console.error('[Dashboard] Failed to refresh notifications on toast event:', error);
+        }
     };
     window.addEventListener('SHOW_TOAST', handleUpdate);
     return () => window.removeEventListener('SHOW_TOAST', handleUpdate);
@@ -69,27 +108,30 @@ const Dashboard = () => {
     }
   }, [transactions, selectedCategory]);
 
-  // Update Forecast Chart when transactions or period changes
+  // Update Forecast Chart when transactions, inventory, recipes, or period changes
   useEffect(() => {
     if (transactions.length > 0) {
-        const forecastResult = calculateForecasting(transactions, forecastPeriod);
-        setForecastData(forecastResult.data);
-        setForecastMAPE(forecastResult.mape);
-        setNextPeriodForecast(forecastResult.nextForecast);
+      const forecastResult = forecastIngredientDemand(transactions, recipes, inventory, forecastPeriod);
+      const topInventoryItems = forecastResult.recommendations
+        .sort((a, b) => b.forecast - a.forecast)
+        .slice(0, 8);
+
+      setForecastData(topInventoryItems);
+      setForecastMAPE(forecastResult.confidence);
+      setNextPeriodForecast(forecastResult.totalForecast);
     }
-  }, [transactions, forecastPeriod]);
+  }, [transactions, recipes, inventory, forecastPeriod]);
 
-  // Calculate Item Forecast & Restocking Needs
+  // Calculate Ingredient Forecast & Restocking Needs based on recipes
   useEffect(() => {
     if (transactions.length > 0) {
-        const itemForecastResult = calculateItemForecast(transactions, forecastPeriod);
-        setItemForecast(itemForecastResult);
+        const ingredientForecastResult = forecastIngredientDemand(transactions, recipes, inventory, forecastPeriod);
+        setItemForecast(ingredientForecastResult);
 
-        // Generate restocking plan with smart parameters
-        const restockPlan = calculateRestockingNeeds(itemForecastResult, {}, { minStockDays: 2, maxStockDays: 5 });
+        const restockPlan = calculateRestockingNeeds(ingredientForecastResult, inventory, { minStockDays: 2, maxStockDays: 5 });
         setRestockingPlan(restockPlan);
     }
-  }, [transactions, forecastPeriod]);
+  }, [transactions, recipes, inventory, forecastPeriod]);
 
   const categories = ['Beverages', 'Main Dish', 'Side Dish', 'Desserts'];
 
@@ -148,7 +190,7 @@ const Dashboard = () => {
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                                 </svg>
                             </div>
-                            <h3 className="text-xl font-bold text-gray-800">Sales Forecast</h3>
+                            <h3 className="text-xl font-bold text-gray-800">Inventory Forecasting</h3>
                         </div>
                         
                         {/* Period Selection Tabs - Top Right */}
@@ -187,15 +229,15 @@ const Dashboard = () => {
 
                     <div className="h-72 w-full">
                         <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={forecastData}>
+                            <BarChart data={forecastData} margin={{ left: 20, right: 20 }}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                                <XAxis dataKey="label" tick={{fontSize: 12, fill: '#666'}} angle={-45} textAnchor="end" height={80} />
+                                <XAxis dataKey="item" tick={{fontSize: 12, fill: '#666'}} angle={-45} textAnchor="end" height={80} />
                                 <YAxis tick={{fontSize: 12, fill: '#666'}} />
-                                <Tooltip contentStyle={{ backgroundColor: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px' }} formatter={(value) => `₱ ${value.toFixed(2)}`} />
+                                <Tooltip contentStyle={{ backgroundColor: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px' }} formatter={(value) => `${value.toFixed(2)}`} />
                                 <Legend wrapperStyle={{ paddingTop: '20px' }} />
-                                <Line type="monotone" dataKey="actual" stroke="#3b82f6" name="Actual Sales" strokeWidth={3} dot={{r:4, fill: '#3b82f6'}} activeDot={{r:6}} />
-                                <Line type="monotone" dataKey="forecast" stroke="#10b981" name="Forecast" strokeWidth={3} strokeDasharray="8 4" dot={{r:4, fill: '#10b981'}} activeDot={{r:6}} />
-                            </LineChart>
+                                <Bar dataKey="forecast" fill="#10b981" name="Forecast Demand" barSize={24} />
+                                <Bar dataKey="safetyStock" fill="#60a5fa" name="Safety Stock" barSize={24} />
+                            </BarChart>
                         </ResponsiveContainer>
                     </div>
 

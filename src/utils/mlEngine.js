@@ -2,7 +2,7 @@
  * MACHINE LEARNING / ANALYTICS ENGINE
  * 
  * 1. Top Menu Dish Ranking (Frequency Count)
- * 2. Sales Forecasting (Holt-Winters Triple Exponential Smoothing)
+ * 2. Inventory Forecasting (Holt-Winters Triple Exponential Smoothing)
  * 3. Daily, Monthly, Yearly forecasting for inventory planning
  */
 
@@ -38,6 +38,126 @@ export const calculateCategoryRanking = (transactions, category) => {
   ranking.sort((a, b) => b.count - a.count);
 
   return ranking.slice(0, 5); // Top 5 items
+};
+
+const parseCsvRow = (line) => {
+  const values = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+        continue;
+      }
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (char === ',' && !inQuotes) {
+      values.push(current);
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  values.push(current);
+  return values;
+};
+
+const parseNumber = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+};
+
+const normalizeTransaction = (tx) => {
+  const parsed = {
+    ...tx,
+    id: tx.id || tx.transaction_id || tx.order_number || null,
+    timestamp: tx.timestamp || tx.created_at || tx.time_ordered || null,
+    totalAmount: tx.total_amount !== undefined ? parseNumber(tx.total_amount) : parseNumber(tx.totalAmount || tx.total),
+    items: Array.isArray(tx.items) ? tx.items : ([]),
+    status: tx.status || tx.state || null,
+  };
+
+  if (typeof parsed.items === 'string' && parsed.items.trim()) {
+    try {
+      parsed.items = JSON.parse(parsed.items);
+    } catch (error) {
+      parsed.items = [];
+    }
+  }
+
+  if (Array.isArray(parsed.items)) {
+    parsed.items = parsed.items.map(orderItem => {
+      const normalizedOrder = {
+        ...orderItem,
+        quantity: parseNumber(orderItem.quantity),
+      };
+
+      if (normalizedOrder.menuItem && typeof normalizedOrder.menuItem === 'object') {
+        normalizedOrder.menuItem = {
+          ...normalizedOrder.menuItem,
+          basePrice: parseNumber(normalizedOrder.menuItem.basePrice),
+          VAT_fee: parseNumber(normalizedOrder.menuItem.VAT_fee),
+          totalPrice: parseNumber(normalizedOrder.menuItem.totalPrice),
+        };
+      }
+
+      return normalizedOrder;
+    });
+  }
+
+  return parsed;
+};
+
+export const parseCsvTransactions = (rawCsv) => {
+  if (!rawCsv || typeof rawCsv !== 'string') return [];
+
+  const lines = rawCsv.split(/\r?\n/).filter(line => line.trim() !== '');
+  if (lines.length < 2) return [];
+
+  const headers = parseCsvRow(lines[0]).map(header => header.trim());
+
+  return lines.slice(1).map(line => {
+    const values = parseCsvRow(line);
+    const row = {};
+
+    headers.forEach((header, index) => {
+      row[header] = values[index] !== undefined ? values[index] : '';
+    });
+
+    return normalizeTransaction(row);
+  });
+};
+
+export const mergeTransactions = (historicalTransactions = [], currentTransactions = []) => {
+  const baseline = Array.isArray(historicalTransactions)
+    ? historicalTransactions.map(normalizeTransaction)
+    : [];
+  const live = Array.isArray(currentTransactions)
+    ? currentTransactions.map(normalizeTransaction)
+    : [];
+
+  const mergedMap = new Map();
+  baseline.forEach(tx => {
+    if (tx.id) mergedMap.set(tx.id, tx);
+  });
+  live.forEach(tx => {
+    if (tx.id) mergedMap.set(tx.id, tx);
+  });
+
+  return Array.from(mergedMap.values()).sort((a, b) => {
+    const aTime = new Date(a.timestamp).getTime() || 0;
+    const bTime = new Date(b.timestamp).getTime() || 0;
+    return aTime - bTime;
+  });
 };
 
 // --- TIME HELPERS ---
@@ -549,6 +669,256 @@ export const calculateItemForecast = (transactions, period = 'monthly') => {
   };
 };
 
+const getRecipeIngredientList = (recipe) => {
+  if (!recipe) return [];
+  if (Array.isArray(recipe)) return recipe;
+  if (Array.isArray(recipe.ingredients)) return recipe.ingredients;
+  return [];
+};
+
+const extractIngredientUsage = (transactions, recipes, period) => {
+  const ingredientUsage = new Map();
+  const now = new Date();
+  let startDate = new Date();
+
+  if (period === 'daily') {
+    startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  } else if (period === 'weekly') {
+    startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  } else {
+    startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  }
+
+  transactions.forEach((t) => {
+    const timestamp = t.timestamp || t.created_at;
+    const tDate = new Date(timestamp);
+    if (isNaN(tDate.getTime()) || tDate < startDate || tDate > now) return;
+
+    if (!t.items || !Array.isArray(t.items)) return;
+
+    t.items.forEach((orderItem) => {
+      const quantity = parseFloat(orderItem.quantity || 1) || 1;
+      const menuItemId = orderItem.menuItem?.id || orderItem.menuItem?.dish_id;
+      const recipe = recipes?.[menuItemId] || null;
+      const ingredientList = getRecipeIngredientList(recipe);
+
+      ingredientList.forEach((ingredient) => {
+        const ingredientName =
+          ingredient.name || ingredient.item || ingredient.inventoryId || 'Unknown Ingredient';
+        const ingredientQty = parseFloat(
+          ingredient.quantity ?? ingredient.qty ?? ingredient.amount ?? 1
+        );
+        const usedQuantity = (isNaN(ingredientQty) ? 1 : ingredientQty) * quantity;
+
+        if (!ingredientUsage.has(ingredientName)) {
+          ingredientUsage.set(ingredientName, []);
+        }
+
+        ingredientUsage.get(ingredientName).push({
+          time: tDate,
+          quantity: usedQuantity,
+          timestamp,
+        });
+      });
+    });
+  });
+
+  return ingredientUsage;
+};
+
+const aggregateIngredientUsage = (usageData, period) => {
+  const now = new Date();
+  let startDate = new Date();
+  const buckets = new Map();
+
+  if (period === 'daily') {
+    startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    for (let i = 0; i <= 23; i++) {
+      const d = new Date(startDate);
+      d.setHours(i, 0, 0, 0);
+      buckets.set(d.getTime(), 0);
+    }
+  } else if (period === 'weekly') {
+    startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    for (let i = 0; i <= 6; i++) {
+      const d = new Date(startDate);
+      d.setDate(startDate.getDate() + i);
+      d.setHours(0, 0, 0, 0);
+      buckets.set(d.getTime(), 0);
+    }
+  } else {
+    startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    for (let i = 0; i <= 29; i++) {
+      const d = new Date(startDate);
+      d.setDate(startDate.getDate() + i);
+      d.setHours(0, 0, 0, 0);
+      buckets.set(d.getTime(), 0);
+    }
+  }
+
+  usageData.forEach((usage) => {
+    const usageDate = new Date(usage.time);
+    if (isNaN(usageDate.getTime()) || usageDate < startDate || usageDate > now) return;
+
+    let bucketKey;
+    if (period === 'daily') {
+      const b = new Date(usageDate);
+      b.setMinutes(0, 0, 0);
+      bucketKey = b.getTime();
+    } else {
+      const b = new Date(usageDate);
+      b.setHours(0, 0, 0, 0);
+      bucketKey = b.getTime();
+    }
+
+    const current = buckets.get(bucketKey) || 0;
+    buckets.set(bucketKey, current + (parseFloat(usage.quantity) || 0));
+  });
+
+  return Array.from(buckets.entries())
+    .map(([time, quantity]) => ({
+      time,
+      quantity,
+      label: formatDateLabel(new Date(time), period === 'daily' ? 'daily' : 'monthly'),
+    }))
+    .sort((a, b) => a.time - b.time);
+};
+
+const getCurrentStockLevel = (ingredientName, inventory) => {
+  if (!Array.isArray(inventory)) return 0;
+  const inventoryItem = inventory.find((item) => {
+    const candidate = item.name || item.item || '';
+    return candidate.toLowerCase() === ingredientName.toLowerCase();
+  });
+  return inventoryItem ? parseFloat(inventoryItem.in_stock || inventoryItem.stock || inventoryItem.quantity || 0) : 0;
+};
+
+const getPeriodDays = (period) => {
+  switch (period) {
+    case 'daily':
+      return 1;
+    case 'weekly':
+      return 7;
+    case 'monthly':
+      return 30;
+    default:
+      return 7;
+  }
+};
+
+const calculateReorderPoint = (avgUsage, period) => {
+  const dailyUsage = avgUsage / Math.max(1, getPeriodDays(period));
+  return dailyUsage * 7;
+};
+
+const calculateUrgency = (daysUntilDepletion, reorderPoint, forecast) => {
+  if (daysUntilDepletion <= 1) return 'CRITICAL';
+  if (daysUntilDepletion <= 3) return 'HIGH';
+  if (daysUntilDepletion <= 7 || forecast > reorderPoint) return 'MEDIUM';
+  return 'LOW';
+};
+
+export const forecastIngredientDemand = (transactions, recipes, currentInventory = [], period = 'weekly') => {
+  if (!transactions || transactions.length === 0 || !recipes) {
+    return {
+      ingredientDemand: {},
+      recommendations: [],
+      totalForecast: 0,
+      confidence: 0,
+      period,
+    };
+  }
+
+  const ingredientUsage = extractIngredientUsage(transactions, recipes, period);
+  const ingredientDemand = {};
+  const recommendations = [];
+  let totalForecast = 0;
+
+  ingredientUsage.forEach((usageRecords, ingredientName) => {
+    const aggregated = aggregateIngredientUsage(usageRecords, period);
+    const quantities = aggregated.map((entry) => entry.quantity);
+    const avgUsage = quantities.length > 0 ? quantities.reduce((sum, value) => sum + value, 0) / quantities.length : 0;
+    const currentStock = getCurrentStockLevel(ingredientName, currentInventory);
+    const reorderPoint = calculateReorderPoint(avgUsage, period);
+    const daysUntilDepletion = currentStock > 0
+      ? Math.max(0, Math.floor(currentStock / Math.max(1, avgUsage / getPeriodDays(period))))
+      : 0;
+
+    const safetyStockBase = parseFloat((avgUsage * 0.2).toFixed(2));
+    if (quantities.length < 2) {
+      ingredientDemand[ingredientName] = {
+        historicalAvg: parseFloat(avgUsage.toFixed(2)),
+        forecast: 0,
+        safetyStock: safetyStockBase,
+        mape: 0,
+        accuracy: 0,
+        confidence: 0,
+        currentStock: parseFloat(currentStock.toFixed(2)),
+        reorderPoint: parseFloat(reorderPoint.toFixed(2)),
+        daysUntilDepletion,
+        recommendedOrder: parseFloat(safetyStockBase.toFixed(2)),
+        trend: 'stable',
+        priority: 'LOW',
+      };
+      return;
+    }
+
+    const seasonLength = Math.max(3, Math.floor(quantities.length / 4));
+    const forecasts = holtWinters(quantities, seasonLength, 0.35, 0.12, 0.28);
+    const mape = calculateMAPE(quantities, forecasts.slice(0, quantities.length));
+    const accuracy = Math.max(0, 100 - mape);
+    const nextForecast = parseFloat((forecasts[quantities.length] || 0).toFixed(2));
+    const safetyStock = parseFloat((nextForecast * 0.2).toFixed(2));
+    const recommendedOrder = parseFloat((nextForecast + safetyStock).toFixed(2));
+    const urgency = calculateUrgency(daysUntilDepletion, reorderPoint, nextForecast);
+    const trendValue = quantities[quantities.length - 1] - (quantities[quantities.length - 2] || quantities[0] || 0);
+    const trend = trendValue > 0 ? 'increasing' : trendValue < 0 ? 'decreasing' : 'stable';
+    const priority = urgency;
+
+    ingredientDemand[ingredientName] = {
+      historicalAvg: parseFloat(avgUsage.toFixed(2)),
+      forecast: nextForecast,
+      safetyStock,
+      mape: parseFloat(mape.toFixed(2)),
+      accuracy: parseFloat(accuracy.toFixed(2)),
+      confidence: parseFloat(accuracy.toFixed(2)),
+      currentStock: parseFloat(currentStock.toFixed(2)),
+      reorderPoint: parseFloat(reorderPoint.toFixed(2)),
+      daysUntilDepletion,
+      recommendedOrder,
+      trend,
+      priority,
+    };
+
+    recommendations.push({
+      item: ingredientName,
+      forecast: nextForecast,
+      safetyStock,
+      confidence: parseFloat(accuracy.toFixed(2)),
+      currentStock: parseFloat(currentStock.toFixed(2)),
+      reorderPoint: parseFloat(reorderPoint.toFixed(2)),
+      daysUntilDepletion,
+      recommendedOrder,
+      urgency,
+      trend,
+      priority,
+      reason: `${accuracy.toFixed(1)}% confidence - ${urgency} priority`,
+    });
+
+    totalForecast += nextForecast;
+  });
+
+  return {
+    ingredientDemand,
+    recommendations,
+    totalForecast: parseFloat(totalForecast.toFixed(2)),
+    confidence: parseFloat((recommendations.length > 0
+      ? recommendations.reduce((sum, item) => sum + item.confidence, 0) / recommendations.length
+      : 0).toFixed(2)),
+    period,
+  };
+};
+
 /**
  * Calculates inventory replenishment needs based on forecasted demand
  * Helps determine what items need to be restocked
@@ -565,6 +935,8 @@ export const calculateRestockingNeeds = (itemForecast, currentInventory, params 
     const minStock = dailyDemand * minStockDays;
     const maxStock = dailyDemand * maxStockDays;
     const optimalOrderQty = maxStock * 1.1; // 10% buffer
+    const priority = rec.priority || rec.urgency || 'LOW';
+    const trend = rec.trend || 'stable';
 
     return {
       item: rec.item,
@@ -572,11 +944,11 @@ export const calculateRestockingNeeds = (itemForecast, currentInventory, params 
       minStockLevel: parseFloat(minStock.toFixed(2)),
       maxStockLevel: parseFloat(maxStock.toFixed(2)),
       optimalOrderQuantity: parseFloat(optimalOrderQty.toFixed(2)),
-      trend: rec.trend,
+      trend,
       confidence: rec.confidence,
-      urgency: rec.priority,
-      restockDate: rec.priority === 'HIGH' ? 'Today' : (rec.priority === 'MEDIUM' ? '2-3 Days' : '1 Week'),
-      notes: `Based on ${rec.confidence.toFixed(1)}% confidence forecast with ${rec.trend} demand trend`
+      urgency: priority,
+      restockDate: priority === 'HIGH' ? 'Today' : (priority === 'MEDIUM' ? '2-3 Days' : '1 Week'),
+      notes: `Based on ${rec.confidence.toFixed(1)}% confidence forecast with ${trend} demand trend`
     };
   });
 
