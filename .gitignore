@@ -2,10 +2,10 @@
 .env
 .env.local
 .env.*.local
+.env.example 
 
 # Dependencies
 node_modules/
-package-lock.json
 npm-debug.log
 yarn-error.log
 
