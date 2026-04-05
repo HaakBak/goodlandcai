@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { getTransactions, getNotifications, getInventory, getRecipes } from '../../services/mockDatabase';
 import { checkAllExpirations } from '../../services/notificationService';
-import rawTransactionsCsv from '../../../data/transactions.csv?raw';
 import { calculateCategoryRanking, calculateItemForecast, calculateRestockingNeeds, forecastIngredientDemand, mergeTransactions, parseCsvTransactions } from '../../utils/mlEngine';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -58,8 +57,8 @@ const Dashboard = () => {
           getRecipes(),
         ]);
 
-        const historicalTransactions = parseCsvTransactions(rawTransactionsCsv);
-        const mergedTx = mergeTransactions(historicalTransactions, data);
+        // ✅ NEW: Use real transaction data from Supabase/POS directly (no CSV)
+        const mergedTx = data || [];  // Use actual transactions from database
 
         setTransactions(mergedTx);
         setNotifications(dedupeNotifications(notifs).slice(0, 5));
