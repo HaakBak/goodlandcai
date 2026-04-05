@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { getTransactions, getNotifications, getInventory, getRecipes } from '../../services/mockDatabase';
 import { checkAllExpirations } from '../../services/notificationService';
-import { calculateCategoryRanking, calculateItemForecast, calculateRestockingNeeds, forecastIngredientDemand, mergeTransactions, parseCsvTransactions } from '../../utils/mlEngine';
+import { calculateCategoryRanking, calculateItemForecast, calculateRestockingNeeds, forecastIngredientDemand } from '../../utils/mlEngine';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, Legend
