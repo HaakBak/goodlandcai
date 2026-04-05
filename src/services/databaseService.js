@@ -59,6 +59,14 @@ let syncQueue = []; // Queue for offline mutations
 let syncInProgress = false;
 const syncListeners = new Set();
 
+// ============================================================================
+// SYNC QUEUE BOUNDS & LIMITS
+// ============================================================================
+
+const MAX_SYNC_QUEUE_SIZE = 100;              // Max operations in queue before dropping oldest
+const MAX_RETRIES_PER_OPERATION = 3;          // Max retry attempts per operation
+const OPERATION_TIMEOUT_MS = 30000;           // 30 seconds max per sync operation
+
 // Network detection
 window.addEventListener('online', () => {
   console.log('[DB] 🔄 Network restored — flushing sync queue');
@@ -100,6 +108,41 @@ export const getSupabaseClient = () => {
   return initSupabaseClient();
 };
 
+/**
+ * Get current sync queue status for monitoring/debugging
+ * Access via: window.__logging?.getSyncQueueStatus?.()
+ * @returns {object} Current queue metrics and status
+ */
+export const getSyncQueueStatus = () => {
+  const totalOps = syncQueue.length;
+  const pendingOps = syncQueue.filter(op => !op.failed).length;
+  const failedOps = syncQueue.filter(op => op.failed).length;
+  const retryingOps = syncQueue.filter(op => op.retryCount > 0 && !op.failed).length;
+  
+  return {
+    isOnline,
+    isSyncing: syncInProgress,
+    queueSize: totalOps,
+    maxQueueSize: MAX_SYNC_QUEUE_SIZE,
+    queueUsage: `${totalOps}/${MAX_SYNC_QUEUE_SIZE}`,
+    pendingOperations: pendingOps,
+    failedOperations: failedOps,
+    retryingOperations: retryingOps,
+    maxRetriesPerOp: MAX_RETRIES_PER_OPERATION,
+    operationTimeoutMs: OPERATION_TIMEOUT_MS,
+    operations: syncQueue.map(op => ({
+      type: op.type,
+      table: op.table,
+      queuedAt: op.queuedAt,
+      retryCount: op.retryCount,
+      failed: op.failed,
+      lastError: op.lastError,
+      lastAttempt: op.lastAttempt,
+      failedAt: op.failedAt,
+    })),
+  };
+};
+
 export const getUserProfileByUsername = async (username) => {
   try {
     const supabase = initSupabaseClient();
@@ -108,20 +151,141 @@ export const getUserProfileByUsername = async (username) => {
       return null;
     }
     
+    if (!username) return null;
+    
+    const trimmedUsername = String(username).trim();
+    console.log(`[Auth] 🔍 Querying user_profiles by username: "${trimmedUsername}"`);
+    
+    // Use maybeSingle() instead of single() to handle 0 results gracefully
     const { data, error } = await supabase
       .from('user_profiles')
       .select('id, username, email, role, status')
-      .eq('username', username)
-      .single();
+      .eq('username', trimmedUsername)
+      .maybeSingle();
     
     if (error) {
-      console.error('[Auth] Error fetching user profile:', error);
+      if (error.code !== 'PGRST116') {
+        console.error('[Auth] Error fetching user profile by username:', error);
+      }
       return null;
     }
     
+    if (data) {
+      console.log(`[Auth] ✅ Found user by username: ${trimmedUsername} (role: ${data.role})`);
+    } else {
+      console.log(`[Auth] ℹ️  No user found with username: "${trimmedUsername}"`);
+    }
+    
+    // data will be null if no user found (which is normal)
     return data;
   } catch (err) {
     console.error('[Auth] getUserProfileByUsername error:', err);
+    return null;
+  }
+};
+
+/**
+ * Get user profile by email (case-insensitive)
+ * @param {string} email - User email
+ * @returns {Promise<object|null>} User profile or null
+ */
+export const getUserProfileByEmail = async (email) => {
+  try {
+    const supabase = initSupabaseClient();
+    if (!supabase) {
+      console.warn('[Auth] Supabase client not available');
+      return null;
+    }
+    
+    if (!email) return null;
+    
+    const trimmedEmail = String(email).trim();
+    console.log(`[Auth] 🔍 Querying user_profiles by email (case-insensitive): "${trimmedEmail}"`);
+    
+    // Use ilike() for case-insensitive exact match instead of eq() + lowercase normalization
+    // This prevents issues with case mismatches in the database
+    const { data, error } = await supabase
+      .from('user_profiles')
+      .select('id, username, email, role, status')
+      .ilike('email', trimmedEmail)
+      .maybeSingle();
+    
+    if (error) {
+      if (error.code !== 'PGRST116') {
+        console.error('[Auth] Error fetching user profile by email:', error);
+      }
+      return null;
+    }
+    
+    if (data) {
+      console.log(`[Auth] ✅ Found user by email: ${data.email} (role: ${data.role})`);
+    } else {
+      console.log(`[Auth] ℹ️  No user found with email: "${trimmedEmail}"`);
+    }
+    
+    // data will be null if no user found (which is normal during signup)
+    return data;
+  } catch (err) {
+    console.error('[Auth] getUserProfileByEmail error:', err);
+    return null;
+  }
+};
+
+/**
+ * Get user profile by username OR email
+ * @param {string} identifier - Username or email
+ * @returns {Promise<object|null>} User profile or null
+ */
+export const getUserProfile = async (identifier) => {
+  if (!identifier) return null;
+  
+  console.log(`[Auth] 🔎 getUserProfile lookup for: "${identifier}"`);
+  
+  // Try as username first
+  let user = await getUserProfileByUsername(identifier);
+  if (user) {
+    console.log(`[Auth] ✅ User found by username lookup`);
+    return user;
+  }
+  
+  // Try as email if username didn't match
+  user = await getUserProfileByEmail(identifier);
+  if (user) {
+    console.log(`[Auth] ✅ User found by email lookup`);
+    return user;
+  }
+  
+  console.warn(`[Auth] ❌ User not found with identifier: "${identifier}"`);
+  return null;
+};
+
+/**
+ * Get admin user profile - specifically for administrator login
+ * Logs diagnostics to aid debugging if admin lookup fails
+ * @param {string} identifier - Username or email (admin username)
+ * @returns {Promise<object|null>} Admin user profile or null
+ */
+export const getAdminUserProfile = async (identifier) => {
+  if (!identifier) return null;
+  
+  try {
+    console.log(`[Auth] 🔍 Searching for admin user with identifier: "${identifier}"`);
+    const user = await getUserProfile(identifier);
+    
+    if (!user) {
+      console.warn(`[Auth] ⚠️ Admin user not found in database with identifier: "${identifier}"`);
+      return null;
+    }
+    
+    if (user.role !== 'Administrator') {
+      console.warn(`[Auth] ⚠️ User "${identifier}" exists but role is "${user.role}", not Administrator`);
+      return null;
+    }
+    
+    console.log(`[Auth] ✅ Admin user found:`, { username: user.username, email: user.email });
+    return user;
+  } catch (err) {
+    console.error('[Auth] Error fetching admin user profile:', err);
     return null;
   }
 };
@@ -258,29 +422,41 @@ const setLocalStorage = (key, data) => {
 // ============================================================================
 
 const queueMutation = (operation) => {
-  syncQueue.push({
+  const operationWithMeta = {
     ...operation,
     queuedAt: new Date().toISOString(),
-  });
+    retryCount: 0,
+    failed: false,
+  };
+  
+  syncQueue.push(operationWithMeta);
+  
+  // Enforce max queue size: drop oldest if exceeded
+  if (syncQueue.length > MAX_SYNC_QUEUE_SIZE) {
+    const dropped = syncQueue.shift();
+    console.warn(`[DB] ⚠️  Queue exceeded max size (${MAX_SYNC_QUEUE_SIZE}). Dropped oldest operation:`, {
+      type: dropped.type,
+      queuedAt: dropped.queuedAt,
+      reason: 'Queue size limit enforced',
+    });
+    broadcastSyncEvent({
+      status: 'queue-warning',
+      message: 'Sync queue exceeded limit. Oldest operation dropped.',
+      queueSize: syncQueue.length,
+    });
+  }
+  
   setLocalStorage('_sync_queue', syncQueue);
-  console.log(`[DB] 📋 Queued operation [${operation.type}] — Queue size: ${syncQueue.length}`);
+  console.log(`[DB] 📋 Queued operation [${operation.type}] — Queue size: ${syncQueue.length}/${MAX_SYNC_QUEUE_SIZE}`);
 };
 
-const flushSyncQueue = async () => {
-  if (syncInProgress || syncQueue.length === 0 || !isOnline) {
-    return;
-  }
-
-  syncInProgress = true;
-  broadcastSyncEvent({ status: 'syncing', queueSize: syncQueue.length });
-
-  const failedOperations = [];
-  let successCount = 0;
-
-  for (const operation of syncQueue) {
+const executeOperationWithTimeout = async (operation) => {
+  return new Promise(async (resolve, reject) => {
+    const timeoutHandle = setTimeout(() => {
+      reject(new Error(`Operation timeout (${OPERATION_TIMEOUT_MS}ms exceeded)`));
+    }, OPERATION_TIMEOUT_MS);
+    
     try {
-      console.log(`[DB] 🔄 Flushing queued operation [${operation.type}]...`);
-      
       // Handle different operation types
       if (operation.type === 'INSERT') {
         const { table, data } = operation;
@@ -297,30 +473,92 @@ const flushSyncQueue = async () => {
           if (error) throw error;
         }
       }
+      
+      clearTimeout(timeoutHandle);
+      resolve();
+    } catch (error) {
+      clearTimeout(timeoutHandle);
+      reject(error);
+    }
+  });
+};
 
+const flushSyncQueue = async () => {
+  if (syncInProgress || syncQueue.length === 0 || !isOnline) {
+    return;
+  }
+
+  syncInProgress = true;
+  broadcastSyncEvent({ status: 'syncing', queueSize: syncQueue.length });
+
+  const pendingOperations = [];
+  let successCount = 0;
+  let failedCount = 0;
+
+  for (const operation of syncQueue) {
+    // Skip permanently failed operations
+    if (operation.failed) {
+      pendingOperations.push(operation);
+      failedCount++;
+      continue;
+    }
+    
+    // Check if retry limit exceeded
+    if (operation.retryCount >= MAX_RETRIES_PER_OPERATION) {
+      operation.failed = true;
+      operation.failedAt = new Date().toISOString();
+      pendingOperations.push(operation);
+      failedCount++;
+      console.error(`[DB] ❌ Operation [${operation.type}] exceeded max retries (${MAX_RETRIES_PER_OPERATION}). Marked as failed.`);
+      broadcastSyncEvent({
+        status: 'operation-failed',
+        operationType: operation.type,
+        reason: `Max retries exceeded (${MAX_RETRIES_PER_OPERATION})`,
+      });
+      continue;
+    }
+
+    try {
+      console.log(`[DB] 🔄 Flushing [${operation.type}] (retry ${operation.retryCount}/${MAX_RETRIES_PER_OPERATION})...`);
+      await executeOperationWithTimeout(operation);
       successCount++;
     } catch (error) {
-      console.error(`[DB] ❌ Failed to flush operation [${operation.type}]:`, error);
-      failedOperations.push(operation);
+      operation.retryCount++;
+      operation.lastError = error.message;
+      operation.lastAttempt = new Date().toISOString();
+      
+      console.error(`[DB] ⚠️  Operation [${operation.type}] failed (attempt ${operation.retryCount}/${MAX_RETRIES_PER_OPERATION}):`, error.message);
+      pendingOperations.push(operation);
     }
   }
 
-  syncQueue = failedOperations;
+  syncQueue = pendingOperations;
   setLocalStorage('_sync_queue', syncQueue);
   syncInProgress = false;
 
   broadcastSyncEvent({
     status: 'synced',
     successCount,
-    failedCount: failedOperations.length,
+    failedCount,
     queueSize: syncQueue.length,
+    failedOperations: syncQueue.filter(op => op.failed).length,
   });
 
-  console.log(`[DB] ✅ Sync complete — ${successCount} succeeded, ${failedOperations.length} pending`);
+  if (failedCount > 0) {
+    console.warn(`[DB] ⚠️  Sync complete — ${successCount} succeeded, ${failedCount} failed or pending`);
+  } else {
+    console.log(`[DB] ✅ Sync complete — ${successCount} succeeded, ${syncQueue.length} pending`);
+  }
 };
 
-// Load queue on startup
+// Load queue on startup and initialize metadata
 syncQueue = getLocalStorage('_sync_queue', []);
+syncQueue = syncQueue.map(op => ({
+  ...op,
+  retryCount: op.retryCount ?? 0,
+  failed: op.failed ?? false,
+}));
+console.log(`[DB] ℹ️  Loaded ${syncQueue.length} operations from localStorage (${syncQueue.filter(op => !op.failed).length} pending, ${syncQueue.filter(op => op.failed).length} failed)`);
 
 // ============================================================================
 // RETRY LOGIC WITH EXPONENTIAL BACKOFF
@@ -387,12 +625,97 @@ export const saveUser = async (user) => {
   try {
     return await retryWithBackoff(async () => {
       const { error } = await supabase.from('user_profiles').insert(user);
-      if (error) throw error;
-      console.log('[DB] ✅ saveUser() to Supabase');
+      if (error) {
+        // Provide detailed error messages for different constraint violations
+        if (error.code === '23505') {
+          // Unique constraint violation
+          if (error.message.includes('username')) {
+            throw new Error(`DUPLICATE_USERNAME: Username "${user.username}" already exists`);
+          } else if (error.message.includes('email')) {
+            throw new Error(`DUPLICATE_EMAIL: Email "${user.email}" already exists`);
+          }
+        }
+        throw error;
+      }
+      console.log('[DB] ✅ saveUser() to Supabase — user created');
     });
   } catch (error) {
     console.error('[DB] ❌ saveUser() failed:', error);
-    queueMutation({ type: 'INSERT', table: 'user_profiles', data: user });
+    // Extract and re-throw specific errors for signup handling
+    if (error.message.includes('DUPLICATE_')) {
+      throw error; // Let caller handle duplicate errors
+    }
+    // Queue for offline sync only on network errors, not constraint violations
+    if (!error.message.includes('DUPLICATE_')) {
+      queueMutation({ type: 'INSERT', table: 'user_profiles', data: user });
+    }
+  }
+};
+
+/**
+ * Verify admin user exists in Supabase
+ * Use during initialization or diagnostics to ensure admin is accessible
+ * @returns {Promise<{exists: boolean, user: object|null, error: string|null}>}
+ */
+export const verifyAdminUserInSupabase = async () => {
+  try {
+    const supabase = initSupabaseClient();
+    if (!supabase) {
+      return { exists: false, user: null, error: 'Supabase client not available', allUsers: [] };
+    }
+
+    console.log('[Auth] 🔍 Verifying admin user in Supabase...');
+
+    // First, query all users to see what's in the database
+    console.log('[Auth] 📋 Fetching all users from user_profiles...');
+    const { data: allUsers, error: allUsersError } = await supabase
+      .from('user_profiles')
+      .select('id, username, email, role, status, created_at');
+
+    if (!allUsersError && allUsers) {
+      console.log(`[Auth] ℹ️  Total users in database: ${allUsers.length}`);
+      allUsers.forEach(u => {
+        console.log(`   - ${u.username} (${u.email}) - Role: ${u.role}`);
+      });
+    }
+
+    // Query specifically for admin users
+    console.log('[Auth] 🔍 Querying for Administrator role...');
+    const { data: adminUsers, error } = await supabase
+      .from('user_profiles')
+      .select('id, username, email, role, status, created_at')
+      .eq('role', 'Administrator');
+
+    if (error) {
+      console.error('[Auth] ❌ Error querying admin users:', error);
+      return { 
+        exists: false, 
+        user: null, 
+        error: `Query error: ${error.message}`,
+        allUsers: allUsers || []
+      };
+    }
+
+    if (!adminUsers || adminUsers.length === 0) {
+      console.warn('[Auth] ⚠️  No Administrator users found in user_profiles table');
+      return { 
+        exists: false, 
+        user: null, 
+        error: 'No admin users found in database',
+        allUsers: allUsers || []
+      };
+    }
+
+    console.log(`[Auth] ✅ Found ${adminUsers.length} admin user(s):`, adminUsers);
+    return { 
+      exists: true, 
+      user: adminUsers[0], 
+      error: null,
+      allUsers: adminUsers
+    };
+  } catch (err) {
+    console.error('[Auth] ❌ verifyAdminUserInSupabase error:', err);
+    return { exists: false, user: null, error: err.message, allUsers: [] };
   }
 };
 
@@ -401,24 +724,26 @@ export const saveUser = async (user) => {
 export const getMenu = async () => {
   const supabase = initSupabaseClient();
 
-  if (!supabase || !isOnline) {
-    console.log('[DB] 🍽️  getMenu() — using localStorage fallback');
-    return Promise.resolve(getLocalStorage(STORAGE_KEYS.MENU, []).map(menuFromDb));
+  // Always try Supabase first
+  if (supabase) {
+    try {
+      return await retryWithBackoff(async () => {
+        const { data, error } = await supabase.from('menu').select('*');
+        if (error) throw error;
+        const menuData = (data || []).map(menuFromDb);
+        console.log('[DB] ✅ getMenu() from Supabase - fetched', menuData.length, 'items');
+        setLocalStorage(STORAGE_KEYS.MENU, menuData);
+        return menuData;
+      });
+    } catch (error) {
+      console.error('[DB] ❌ getMenu() Supabase failed, trying cache:', error.message);
+      const cached = getLocalStorage(STORAGE_KEYS.MENU, []);
+      return cached.length > 0 ? cached : [];
+    }
   }
 
-  try {
-    return await retryWithBackoff(async () => {
-      const { data, error } = await supabase.from('menu').select('*');
-      if (error) throw error;
-      const menuData = (data || []).map(menuFromDb);
-      console.log('[DB] ✅ getMenu() from Supabase');
-      setLocalStorage(STORAGE_KEYS.MENU, menuData);
-      return menuData;
-    });
-  } catch (error) {
-    console.error('[DB] ❌ getMenu() failed:', error);
-    return getLocalStorage(STORAGE_KEYS.MENU, []);
-  }
+  console.log('[DB] 🍽️  getMenu() — Supabase unavailable, using localStorage');
+  return Promise.resolve(getLocalStorage(STORAGE_KEYS.MENU, []).map(menuFromDb));
 };
 
 export const saveMenu = (menu) => {
@@ -458,26 +783,113 @@ export const resetMenu = async () => {
 
 // ─── INVENTORY ───────────────────────────────────────────────────────────
 
+// Helper: Convert item to database format - writes BOTH snake_case and camelCase columns
+const inventoryItemToDb = (item) => {
+  return {
+    id: item.id,
+    name: item.name,
+    category: item.category,
+    
+    // Write to BOTH column sets for compatibility
+    // Snake_case columns (primary)
+    in_stock: item.in_stock ?? item.inStock ?? 0,
+    reorder_level: item.reorder_level ?? item.reorderLevel ?? 10,
+    unit: item.unit ?? item.measurementUnit ?? '',
+    expiration_date: item.expiration_date ?? item.expirationDate,
+    
+    // CamelCase columns (mirror)
+    inStock: item.inStock ?? item.in_stock ?? 0,
+    reorderLevel: item.reorderLevel ?? item.reorder_level ?? 10,
+    measurementUnit: item.measurementUnit ?? item.unit ?? '',
+    measurementQty: item.measurementQty ?? 1,
+    openStock: item.openStock ?? 0,
+    lowStockThreshold: item.lowStockThreshold ?? item.reorder_level ?? item.reorderLevel ?? 5,
+    expirationDate: item.expirationDate ?? item.expiration_date,
+    
+    // Always preserve these
+    cost: item.cost,
+    type: item.type,
+    created_at: item.created_at,
+    updated_at: item.updated_at,
+  };
+};
+
+// Helper: Normalize inventory data - bidirectional mapping for both snake_case and camelCase
+const normalizeInventoryItem = (item) => {
+  if (!item) return null;
+  
+  // Use whichever format is populated (prefer snake_case as source of truth)
+  const inStock = item.in_stock ?? item.inStock ?? 0;
+  const reorderLevel = item.reorder_level ?? item.reorderLevel ?? 10;
+  const measurementUnit = item.unit ?? item.measurementUnit ?? '';
+  const measurementQty = item.measurementQty ?? 1;
+  const openStock = item.openStock ?? 0;
+  const lowStockThreshold = item.lowStockThreshold ?? reorderLevel ?? 5;
+  const expirationDate = item.expiration_date ?? item.expirationDate;
+  
+  return {
+    // IDs and basic fields
+    id: item.id,
+    name: item.name,
+    category: item.category,
+    
+    // Stock levels - BOTH FORMATS (snake_case and camelCase)
+    in_stock: inStock,
+    inStock: inStock,
+    
+    // Reorder/Low stock threshold - BOTH FORMATS
+    reorder_level: reorderLevel,
+    reorderLevel: reorderLevel,
+    lowStockThreshold: lowStockThreshold,
+    
+    // Units and measurements - BOTH FORMATS
+    unit: measurementUnit,
+    measurementUnit: measurementUnit,
+    measurementQty: measurementQty,
+    
+    // Open stock
+    openStock: openStock,
+    
+    // Cost and type
+    cost: item.cost,
+    type: item.type,
+    
+    // Dates - BOTH FORMATS
+    expiration_date: expirationDate,
+    expirationDate: expirationDate,
+    created_at: item.created_at,
+    createdAt: item.created_at,
+    updated_at: item.updated_at,
+    updatedAt: item.updated_at,
+  };
+};
+
 export const getInventory = async () => {
   const supabase = initSupabaseClient();
 
-  if (!supabase || !isOnline) {
-    console.log('[DB] 📦 getInventory() — using localStorage fallback');
-    return Promise.resolve(getLocalStorage(STORAGE_KEYS.INVENTORY, []));
+  // Always try Supabase first, even if offline flag is set
+  if (supabase) {
+    try {
+      return await retryWithBackoff(async () => {
+        const { data, error } = await supabase.from('inventory').select('*');
+        if (error) throw error;
+        // Normalize items to ensure both snake_case and camelCase properties exist
+        const normalizedData = (data || []).map(normalizeInventoryItem);
+        console.log('[DB] ✅ getInventory() from Supabase - fetched', normalizedData.length, 'items');
+        setLocalStorage(STORAGE_KEYS.INVENTORY, normalizedData);
+        return normalizedData;
+      });
+    } catch (error) {
+      console.error('[DB] ❌ getInventory() Supabase failed, trying cache:', error.message);
+      // Fall back to localStorage only if Supabase fails
+      const cached = getLocalStorage(STORAGE_KEYS.INVENTORY, []);
+      return cached.length > 0 ? cached : [];
+    }
   }
 
-  try {
-    return await retryWithBackoff(async () => {
-      const { data, error } = await supabase.from('inventory').select('*');
-      if (error) throw error;
-      console.log('[DB] ✅ getInventory() from Supabase');
-      setLocalStorage(STORAGE_KEYS.INVENTORY, data);
-      return data || [];
-    });
-  } catch (error) {
-    console.error('[DB] ❌ getInventory() failed:', error);
-    return getLocalStorage(STORAGE_KEYS.INVENTORY, []);
-  }
+  // Only use localStorage if Supabase is not available
+  console.log('[DB] 📦 getInventory() — Supabase unavailable, using localStorage');
+  return Promise.resolve(getLocalStorage(STORAGE_KEYS.INVENTORY, []));
 };
 
 export const saveInventory = (items) => {
@@ -501,44 +913,59 @@ export const saveInventory = (items) => {
 
 export const addInventoryItem = async (item) => {
   const supabase = initSupabaseClient();
-  const newItem = { ...item, id: crypto.randomUUID(), created_at: new Date().toISOString() };
+  const timestamp = new Date().toISOString();
+  const newItem = {
+    ...item,
+    id: item.id || crypto.randomUUID(),
+    created_at: item.created_at || timestamp,
+    updated_at: timestamp,
+  };
+  
+  // Convert to database format (writes both snake_case and camelCase columns)
+  const dbItem = inventoryItemToDb(newItem);
 
   if (!supabase || !isOnline) {
     console.log('[DB] 📥 addInventoryItem() — queued for offline sync');
-    queueMutation({ type: 'INSERT', table: 'inventory', data: newItem });
+    queueMutation({ type: 'INSERT', table: 'inventory', data: dbItem });
     return Promise.resolve(newItem);
   }
 
   try {
     await retryWithBackoff(async () => {
-      const { error } = await supabase.from('inventory').insert(newItem);
+      const { error } = await supabase.from('inventory').insert(dbItem);
       if (error) throw error;
-      console.log('[DB] ✅ addInventoryItem() to Supabase');
+      console.log('[DB] ✅ addInventoryItem() to Supabase — wrote to both column formats');
     });
     return newItem;
   } catch (error) {
     console.error('[DB] ❌ addInventoryItem() failed:', error);
-    queueMutation({ type: 'INSERT', table: 'inventory', data: newItem });
+    queueMutation({ type: 'INSERT', table: 'inventory', data: dbItem });
     return newItem;
   }
 };
 
 export const updateInventoryItem = async (itemId, updates) => {
   const supabase = initSupabaseClient();
+  
+  // Convert updates to database format (writes both snake_case and camelCase columns)
+  const dbUpdates = inventoryItemToDb({ id: itemId, ...updates });
+  
+  // Remove id from updates as it's the WHERE clause
+  delete dbUpdates.id;
 
   if (!supabase || !isOnline) {
     console.log('[DB] 📥 updateInventoryItem() — queued for offline sync');
-    queueMutation({ type: 'UPDATE', table: 'inventory', id: itemId, data: updates });
+    queueMutation({ type: 'UPDATE', table: 'inventory', id: itemId, data: dbUpdates });
     return Promise.resolve();
   }
 
   return retryWithBackoff(async () => {
-    const { error } = await supabase.from('inventory').update(updates).eq('id', itemId);
+    const { error } = await supabase.from('inventory').update(dbUpdates).eq('id', itemId);
     if (error) throw error;
-    console.log('[DB] ✅ updateInventoryItem() to Supabase');
+    console.log('[DB] ✅ updateInventoryItem() to Supabase — wrote to both column formats');
   }).catch(error => {
     console.error('[DB] ❌ updateInventoryItem() failed:', error);
-    queueMutation({ type: 'UPDATE', table: 'inventory', id: itemId, data: updates });
+    queueMutation({ type: 'UPDATE', table: 'inventory', id: itemId, data: dbUpdates });
   });
 };
 
@@ -641,7 +1068,10 @@ export const getHistory = async () => {
 export const addHistoryLog = async (log) => {
   const supabase = initSupabaseClient();
   const now = new Date();
-  const userId = log.userId || sessionStorage.getItem('userId') || null;
+  
+  // Get user_id from: explicit parameter > sessionStorage > null
+  const userId = log.userId || log.user_id || sessionStorage.getItem('userId') || null;
+  
   const logEntry = {
     id: crypto.randomUUID(),
     timestamp: log.timestamp || now.toISOString(),
@@ -651,9 +1081,13 @@ export const addHistoryLog = async (log) => {
     description: log.description,
     user: log.user,
     role: log.role,
-    user_id: userId,
+    user_id: userId, // Can be null - handled by nullable column in schema
+    log_category: log.log_category || 'SYSTEM_OPERATION', // NEW: Category for log type separation
+    details: log.details || null,
     created_at: now.toISOString(),
   };
+
+  console.log(`[DB] 📝 Adding history log [${log.type}] for user: ${userId || '(system)'}`, logEntry);
 
   if (!supabase || !isOnline) {
     console.log('[DB] 📥 addHistoryLog() — queued for offline sync');
@@ -665,10 +1099,11 @@ export const addHistoryLog = async (log) => {
     await retryWithBackoff(async () => {
       const { error } = await supabase.from('history').insert(logEntry);
       if (error) throw error;
-      console.log('[DB] ✅ addHistoryLog() to Supabase');
+      console.log('[DB] ✅ addHistoryLog() to Supabase — logged:', log.type);
     });
   } catch (error) {
     console.error('[DB] ❌ addHistoryLog() failed:', error);
+    // Queue for offline sync even if user_id is null (FK issue should be fixed by schema migration)
     queueMutation({ type: 'INSERT', table: 'history', data: logEntry });
   }
 };
@@ -785,8 +1220,28 @@ export const getRecipes = async () => {
       const { data, error } = await supabase.from('recipes').select('*');
       if (error) throw error;
       console.log('[DB] ✅ getRecipes() from Supabase');
+      
+      // ✅ Detect duplicate recipes (multiple recipes per dish_id)
       const recipes = {};
-      data.forEach(r => { recipes[r.dish_id] = r; });
+      const duplicates = {};
+      
+      data.forEach(r => {
+        if (recipes[r.dish_id]) {
+          if (!duplicates[r.dish_id]) {
+            duplicates[r.dish_id] = [];
+          }
+          duplicates[r.dish_id].push(r.id);
+          console.warn(`[DB] ⚠️ Duplicate recipe found for dish ${r.dish_id}: ${r.id}`);
+        }
+        recipes[r.dish_id] = r;
+      });
+      
+      if (Object.keys(duplicates).length > 0) {
+        console.error('[DB] ❌ CRITICAL: Duplicate recipes detected for dishes:', Object.keys(duplicates));
+        console.error('[DB] ⚠️ Admin action required: Clean up duplicate recipes in Supabase');
+        console.error('[DB] Duplicate recipe IDs:', duplicates);
+      }
+      
       setLocalStorage(STORAGE_KEYS.RECIPES, recipes);
       return recipes;
     });
@@ -798,13 +1253,13 @@ export const getRecipes = async () => {
 
 export const saveRecipe = async (dishId, recipe) => {
   const supabase = initSupabaseClient();
-  const recipeData = Array.isArray(recipe)
+  let recipeData = Array.isArray(recipe)
     ? { dish_id: dishId, ingredients: recipe, id: crypto.randomUUID() }
     : {
         ...recipe,
         dish_id: dishId,
         ingredients: recipe.ingredients ?? recipe,
-        id: recipe.id || crypto.randomUUID(),
+        id: recipe.id || null,
       };
 
   if (!supabase || !isOnline) {
@@ -815,9 +1270,30 @@ export const saveRecipe = async (dishId, recipe) => {
 
   try {
     await retryWithBackoff(async () => {
+      // ✅ Check if recipe already exists for this dish
+      if (!recipeData.id) {
+        const { data: existing, error: fetchError } = await supabase
+          .from('recipes')
+          .select('id')
+          .eq('dish_id', dishId)
+          .maybeSingle();
+        
+        if (fetchError && fetchError.code !== 'PGRST116') {
+          throw fetchError;
+        }
+        
+        if (existing?.id) {
+          recipeData.id = existing.id;
+          console.log('[DB] 📝 Updating existing recipe for dish:', dishId);
+        } else {
+          recipeData.id = crypto.randomUUID();
+          console.log('[DB] ➕ Creating new recipe for dish:', dishId);
+        }
+      }
+      
       const { error } = await supabase.from('recipes').upsert(recipeData);
       if (error) throw error;
-      console.log('[DB] ✅ saveRecipe() to Supabase');
+      console.log('[DB] ✅ saveRecipe() to Supabase:', recipeData.id);
     });
   } catch (error) {
     console.error('[DB] ❌ saveRecipe() failed:', error);
@@ -899,25 +1375,86 @@ export const addNotification = async (note) => {
 
 // ─── USAGE LOGS ───────────────────────────────────────────────────────────
 
+// Helper: Normalize usage log for display - flexible for different action types
+// Preserves complete 'details' field untouched for audit trail
+const normalizeUsageLog = (log) => {
+  if (!log) return null;
+
+  // Extract display properties based on action type (flexible for future)
+  let displayProps = {
+    id: log.id,
+    action: log.action,
+    created_at: log.created_at,
+    timestamp: log.created_at, // For backward compatibility
+    details: log.details || {}, // PRESERVE COMPLETE DETAILS FOR AUDIT
+  };
+
+  // Action-specific normalization (extensible for future log types)
+  if (log.action === 'RECIPE_DEDUCTION') {
+    // Extract from nested details for RECIPE_DEDUCTION logs
+    displayProps.itemName = log.details?.inventory_item_name || 'Unknown Item';
+    displayProps.quantityUsed = log.details?.quantity_deducted || 0;
+    displayProps.unit = log.details?.measurement_unit || '';
+    displayProps.timestamp = log.details?.timestamp || log.created_at;
+    // Preserve audit fields in display object as well
+    displayProps.inventoryItemId = log.details?.inventory_item_id;
+    displayProps.oldStock = log.details?.old_stock;
+    displayProps.newStock = log.details?.new_stock;
+  } else if (log.action === 'INVENTORY_ADJUSTMENT') {
+    // Future: INVENTORY_ADJUSTMENT logs
+    displayProps.itemName = log.details?.item_name || 'Unknown Item';
+    displayProps.quantityUsed = log.details?.quantity_adjusted || 0;
+    displayProps.unit = log.details?.unit || '';
+    displayProps.adjustmentReason = log.details?.reason || 'Manual Adjustment';
+  } else if (log.action === 'WASTE_LOGGED') {
+    // Future: WASTE_LOGGED logs
+    displayProps.itemName = log.details?.item_name || 'Unknown Item';
+    displayProps.quantityUsed = log.details?.quantity_wasted || 0;
+    displayProps.unit = log.details?.unit || '';
+    displayProps.wasteReason = log.details?.reason || 'Waste Disposal';
+  } else if (log.action === 'SUPPLIER_ORDER') {
+    // Future: SUPPLIER_ORDER logs
+    displayProps.itemName = log.details?.item_name || 'Unknown Item';
+    displayProps.quantityUsed = log.details?.quantity_received || 0;
+    displayProps.unit = log.details?.unit || '';
+    displayProps.supplierId = log.details?.supplier_id;
+  } else {
+    // FALLBACK: For unknown action types, try to extract common fields
+    displayProps.itemName = log.details?.inventory_item_name || log.details?.item_name || 'Unknown Item';
+    displayProps.quantityUsed = log.details?.quantity_deducted ?? log.details?.quantity_adjusted ?? log.details?.quantity_wasted ?? 0;
+    displayProps.unit = log.details?.measurement_unit || log.details?.unit || '';
+  }
+
+  return displayProps;
+};
+
 export const getUsageLogs = async () => {
   const supabase = initSupabaseClient();
 
   if (!supabase || !isOnline) {
     console.log('[DB] 📊 getUsageLogs() — using localStorage fallback');
-    return Promise.resolve(getLocalStorage(STORAGE_KEYS.USAGE_LOGS, []));
+    const cachedLogs = getLocalStorage(STORAGE_KEYS.USAGE_LOGS, []);
+    // Apply normalization to cached logs as well (for consistent display offline)
+    const normalizedCached = cachedLogs.map(normalizeUsageLog);
+    return Promise.resolve(normalizedCached);
   }
 
   try {
     return await retryWithBackoff(async () => {
       const { data, error } = await supabase.from('usage_logs').select('*').order('created_at', { ascending: false });
       if (error) throw error;
-      console.log('[DB] ✅ getUsageLogs() from Supabase');
-      setLocalStorage(STORAGE_KEYS.USAGE_LOGS, data);
-      return data || [];
+      // Normalize all logs for consistent display (preserves details for audit)
+      const normalizedData = (data || []).map(normalizeUsageLog);
+      console.log('[DB] ✅ getUsageLogs() from Supabase - fetched and normalized', normalizedData.length, 'logs');
+      setLocalStorage(STORAGE_KEYS.USAGE_LOGS, data); // Store raw for sync, display normalized
+      return normalizedData;
     });
   } catch (error) {
     console.error('[DB] ❌ getUsageLogs() failed:', error);
-    return getLocalStorage(STORAGE_KEYS.USAGE_LOGS, []);
+    const cachedLogs = getLocalStorage(STORAGE_KEYS.USAGE_LOGS, []);
+    // Apply normalization to fallback logs too
+    const normalizedCached = cachedLogs.map(normalizeUsageLog);
+    return normalizedCached;
   }
 };
 
@@ -925,7 +1462,6 @@ export const addUsageLog = async (log) => {
   const supabase = initSupabaseClient();
   const logEntry = {
     id: crypto.randomUUID(),
-    timestamp: new Date().toISOString(),
     created_at: new Date().toISOString(),
     ...log,
   };
@@ -1027,12 +1563,12 @@ export const initDatabase = () => {
 };
 
 // ============================================================================
-// EXPORTS FOR DEBUG/TESTING
+// EXPORTS FOR DEBUG/TESTING (DEVELOPMENT ONLY)
 // ============================================================================
 
-export const __DEBUG__ = {
+export const __DEBUG__ = import.meta.env.DEV ? {
   isOnline: () => isOnline,
   syncQueue: () => [...syncQueue],
   flushQueue: flushSyncQueue,
   getSupabaseClient: () => supabaseClient,
-};
+} : {};

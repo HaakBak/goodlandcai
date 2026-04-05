@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getSupabaseClient, getUserProfileByUsername, addHistoryLog, saveUser } from '../services/databaseService';
+import { getSupabaseClient, getUserProfileByUsername, getUserProfileByEmail, getUserProfile, getAdminUserProfile, addHistoryLog, saveUser } from '../services/databaseService';
 import { User as UserIcon, Lock, Mail, ArrowRight } from 'lucide-react';
 import logo from '/src/assets/logo.png';
 
@@ -20,7 +20,7 @@ const EmployeeLogin = ({ onBack }) => {
     setError('');
 
     if (!username || !password) {
-      setError('Please enter both username and password');
+      setError('Please enter username/email and password');
       return;
     }
 
@@ -33,29 +33,11 @@ const EmployeeLogin = ({ onBack }) => {
         return;
       }
 
-      // Attempt Supabase Auth sign-in using email format
-      const email = `${username}@goodlandcafe.local`;
-      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-        email,
-        password
-      });
-
-      if (authError) {
-        console.error('[Auth] Sign-in error:', authError);
-        if (authError.message.includes('Invalid login credentials')) {
-          setError('Incorrect username or password. Please try again.');
-        } else {
-          setError(`Login failed: ${authError.message}`);
-        }
-        return;
-      }
-
-      // Auth successful - fetch user profile to get role
-      const userProfile = await getUserProfileByUsername(username);
+      // Fetch user profile by username or email
+      const userProfile = await getUserProfile(username);
       
       if (!userProfile) {
-        setError('User profile not found. Contact administrator.');
-        await supabase.auth.signOut();
+        setError('User not found. Please check your username/email or sign up.');
         return;
       }
 
@@ -68,16 +50,32 @@ const EmployeeLogin = ({ onBack }) => {
 
         await addHistoryLog({
           type: 'Unauthorized Login Attempt',
-          description: `Employee login form used by ${username} with actual role ${userProfile.role}`,
-          user: username,
+          description: `Employee login form used by ${userProfile.username} with actual role ${userProfile.role}`,
+          user: userProfile.username,
           role: userProfile.role,
+          userId: userProfile.id,
           timestamp,
           date,
           time,
         });
 
         setError(`This is not an employee account. Please use the ${userProfile.role} login.`);
-        await supabase.auth.signOut();
+        return;
+      }
+
+      // Use stored email from profile to authenticate with Supabase Auth
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email: userProfile.email,
+        password
+      });
+
+      if (authError) {
+        console.error('[Auth] Sign-in error:', authError);
+        if (authError.message.includes('Invalid login credentials')) {
+          setError('Incorrect username or password. Please try again.');
+        } else {
+          setError(`Login failed: ${authError.message}`);
+        }
         return;
       }
 
@@ -99,7 +97,7 @@ const EmployeeLogin = ({ onBack }) => {
 
       console.log('✅ [Employee Login Success]', { username, role: 'Employee' });
 
-      // Log history entry
+      // Log history entry with explicit userId
       const now = new Date();
       const timestamp = now.toISOString();
       const date = now.toISOString().split('T')[0];
@@ -110,6 +108,7 @@ const EmployeeLogin = ({ onBack }) => {
         description: `Employee ${username} logged into POS system`,
         user: username,
         role: 'Employee',
+        userId: userProfile.id,
         timestamp,
         date,
         time
@@ -145,24 +144,34 @@ const EmployeeLogin = ({ onBack }) => {
         return;
       }
 
-      // Check if user already exists
-      const existingUser = await getUserProfileByUsername(username);
-      if (existingUser) {
-        setError('Username already exists. Please choose another.');
+      // Check if username already exists
+      console.log(`[Employee Signup] Checking duplicate username: "${username}"`);
+      const existingUsername = await getUserProfileByUsername(username);
+      if (existingUsername) {
+        console.warn(`[Employee Signup] ❌ Username duplicate detected: "${username}"`);
+        setError(`Username "${username}" is already taken. Please choose another.`);
         return;
       }
+      console.log(`[Employee Signup] ✅ Username available: "${username}"`);
 
-      // Sign up new user via Supabase Auth using internal email format
-      // This avoids rate limiting on external domains (Gmail, Yahoo, etc.)
-      const authEmail = `${username}@goodlandcafe.local`;
+      // Check if email already exists
+      console.log(`[Employee Signup] Checking duplicate email: "${email}"`);
+      const existingEmail = await getUserProfileByEmail(email);
+      if (existingEmail) {
+        console.warn(`[Employee Signup] ❌ Email duplicate detected: "${email}"`);
+        setError(`Email "${email}" is already registered. Please use a different email or login.`);
+        return;
+      }
+      console.log(`[Employee Signup] ✅ Email available: "${email}"`);
+
+      // Sign up new user via Supabase Auth using user-provided email
       const { data: authData, error: signUpError } = await supabase.auth.signUp({
-        email: authEmail,
+        email: email,
         password,
         options: {
           data: {
             username: username,
-            role: 'Employee',
-            userProvidedEmail: email  // Store user's actual email for reference
+            role: 'Employee'
           }
         }
       });
@@ -178,16 +187,42 @@ const EmployeeLogin = ({ onBack }) => {
         return;
       }
 
-      await saveUser({
-        id: authData.user.id,
-        username,
-        password_hash: 'SUPABASE_AUTH',
-        email,
-        role: 'Employee',
-        status: 'active',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
+      // Save user to database
+      try {
+        await saveUser({
+          id: authData.user.id,
+          username,
+          password_hash: 'SUPABASE_AUTH',
+          email,
+          role: 'Employee',
+          status: 'active',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+      } catch (saveError) {
+        // Handle database constraint violations
+        console.error('[Auth] saveUser error during signup:', saveError.message);
+        
+        // Rollback: Delete the auth user if database save failed
+        if (authData.user?.id) {
+          try {
+            await supabase.auth.admin.deleteUser(authData.user.id);
+            console.log('[Auth] Rolled back Supabase Auth user due to database save failure');
+          } catch (rollbackErr) {
+            console.warn('[Auth] Failed to rollback auth user:', rollbackErr);
+          }
+        }
+        
+        // Show specific error message based on constraint violation
+        if (saveError.message.includes('DUPLICATE_USERNAME')) {
+          setError(`Username "${username}" is already taken. Please choose another.`);
+        } else if (saveError.message.includes('DUPLICATE_EMAIL')) {
+          setError(`Email "${email}" is already registered. Please use a different email.`);
+        } else {
+          setError('Failed to create account. Please try again.');
+        }
+        return;
+      }
 
       console.log('✅ [Employee Account Created]', { username });
 
@@ -196,28 +231,31 @@ const EmployeeLogin = ({ onBack }) => {
       const date = timestamp.split('T')[0];
       const time = now.toTimeString().split(' ')[0];
 
-      // Log signup event
-      await addHistoryLog({
-        type: 'User Signup',
-        description: `New Employee account created: ${username}`,
-        user: username,
-        role: 'Employee',
-        timestamp,
-        date,
-        time
-      });
-
-      // Auto-login after signup
+      // Set session data BEFORE logging (so user_id is available for history logs)
       sessionStorage.setItem('userRole', 'Employee');
       sessionStorage.setItem('username', username);
       sessionStorage.setItem('userId', authData.user.id);
       sessionStorage.setItem('supabaseSessionToken', authData.session?.access_token || '');
 
+      // Log signup event with explicit userId
+      await addHistoryLog({
+        type: 'User Signup',
+        description: `New Employee account created: ${username}`,
+        user: username,
+        role: 'Employee',
+        userId: authData.user.id,
+        timestamp,
+        date,
+        time
+      });
+
+      // Log login event
       await addHistoryLog({
         type: 'Employee Login',
         description: `New employee ${username} logged into POS system`,
         user: username,
         role: 'Employee',
+        userId: authData.user.id,
         timestamp,
         date,
         time
@@ -254,7 +292,7 @@ const EmployeeLogin = ({ onBack }) => {
             <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
             <input 
               type="text" 
-              placeholder="Username"
+              placeholder="Username or Email"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               className="w-full pl-12 pr-4 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-green-600 focus:ring-0 transition-all text-lg outline-none"
@@ -336,7 +374,7 @@ const ManagerLogin = ({ onBack }) => {
     setError('');
 
     if (!username || !password) {
-      setError('Please enter both username and password');
+      setError('Please enter username/email and password');
       return;
     }
 
@@ -349,29 +387,13 @@ const ManagerLogin = ({ onBack }) => {
         return;
       }
 
-      // Attempt Supabase Auth sign-in using email format
-      const email = `${username}@goodlandcafe.local`;
-      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-        email,
-        password
-      });
-
-      if (authError) {
-        console.error('[Auth] Sign-in error:', authError);
-        if (authError.message.includes('Invalid login credentials')) {
-          setError('Incorrect username or password. Please try again.');
-        } else {
-          setError(`Login failed: ${authError.message}`);
-        }
-        return;
-      }
-
-      // Auth successful - fetch user profile to get role
-      const userProfile = await getUserProfileByUsername(username);
+      // Fetch user profile by username or email
+      const userProfile = await getUserProfile(username);
       
       if (!userProfile) {
-        setError('User profile not found. Contact administrator.');
-        await supabase.auth.signOut();
+        // Provide more helpful error message  
+        console.warn(`[Auth] User not found during manager/admin login. Searched for: "${username}"`);
+        setError('User not found. Please check your username/email or sign up.');
         return;
       }
 
@@ -384,16 +406,32 @@ const ManagerLogin = ({ onBack }) => {
 
         await addHistoryLog({
           type: 'Unauthorized Login Attempt',
-          description: `Manager/Admin login form used by ${username} with actual role ${userProfile.role}`,
-          user: username,
+          description: `Manager/Admin login form used by ${userProfile.username} with actual role ${userProfile.role}`,
+          user: userProfile.username,
           role: userProfile.role,
+          userId: userProfile.id,
           timestamp,
           date,
           time,
         });
 
         setError(`This is not a manager account. Please use the Employee login.`);
-        await supabase.auth.signOut();
+        return;
+      }
+
+      // Use stored email from profile to authenticate with Supabase Auth
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email: userProfile.email,
+        password
+      });
+
+      if (authError) {
+        console.error('[Auth] Sign-in error:', authError);
+        if (authError.message.includes('Invalid login credentials')) {
+          setError('Incorrect username or password. Please try again.');
+        } else {
+          setError(`Login failed: ${authError.message}`);
+        }
         return;
       }
 
@@ -419,7 +457,7 @@ const ManagerLogin = ({ onBack }) => {
       const loginType = userProfile.role === 'Administrator' ? 'Administrator Login' : 'Manager Login';
       const destination = userProfile.role === 'Administrator' ? '/admin' : '/manager/dashboard';
 
-      // Log history entry
+      // Log history entry with explicit userId
       const now = new Date();
       const timestamp = now.toISOString();
       const date = now.toISOString().split('T')[0];
@@ -430,6 +468,7 @@ const ManagerLogin = ({ onBack }) => {
         description: `${userProfile.role} ${username} logged in`,
         user: username,
         role: userProfile.role,
+        userId: userProfile.id,
         timestamp,
         date,
         time
@@ -465,24 +504,34 @@ const ManagerLogin = ({ onBack }) => {
         return;
       }
 
-      // Check if user already exists by username
-      const existingUser = await getUserProfileByUsername(username);
-      if (existingUser) {
-        setError('Username already exists. Please choose another.');
+      // Check if username already exists
+      console.log(`[Manager Signup] Checking duplicate username: "${username}"`);
+      const existingUsername = await getUserProfileByUsername(username);
+      if (existingUsername) {
+        console.warn(`[Manager Signup] ❌ Username duplicate detected: "${username}"`);
+        setError(`Username "${username}" is already taken. Please choose another.`);
         return;
       }
+      console.log(`[Manager Signup] ✅ Username available: "${username}"`);
 
-      // Sign up new user via Supabase Auth using internal email format
-      // This avoids rate limiting on external domains (Gmail, Yahoo, etc.)
-      const authEmail = `${username}@goodlandcafe.local`;
+      // Check if email already exists
+      console.log(`[Manager Signup] Checking duplicate email: "${email}"`);
+      const existingEmail = await getUserProfileByEmail(email);
+      if (existingEmail) {
+        console.warn(`[Manager Signup] ❌ Email duplicate detected: "${email}"`);
+        setError(`Email "${email}" is already registered. Please use a different email or login.`);
+        return;
+      }
+      console.log(`[Manager Signup] ✅ Email available: "${email}"`);
+
+      // Sign up new user via Supabase Auth using user-provided email
       const { data: authData, error: signUpError } = await supabase.auth.signUp({
-        email: authEmail,
+        email: email,
         password,
         options: {
           data: {
             username: username,
-            role: 'Manager',
-            userProvidedEmail: email  // Store user's actual email for reference
+            role: 'Manager'
           }
         }
       });
@@ -498,16 +547,42 @@ const ManagerLogin = ({ onBack }) => {
         return;
       }
 
-      await saveUser({
-        id: authData.user.id,
-        username,
-        password_hash: 'SUPABASE_AUTH',
-        email,
-        role: 'Manager',
-        status: 'active',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
+      // Save user to database
+      try {
+        await saveUser({
+          id: authData.user.id,
+          username,
+          password_hash: 'SUPABASE_AUTH',
+          email,
+          role: 'Manager',
+          status: 'active',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+      } catch (saveError) {
+        // Handle database constraint violations
+        console.error('[Auth] saveUser error during signup:', saveError.message);
+        
+        // Rollback: Delete the auth user if database save failed
+        if (authData.user?.id) {
+          try {
+            await supabase.auth.admin.deleteUser(authData.user.id);
+            console.log('[Auth] Rolled back Supabase Auth user due to database save failure');
+          } catch (rollbackErr) {
+            console.warn('[Auth] Failed to rollback auth user:', rollbackErr);
+          }
+        }
+        
+        // Show specific error message based on constraint violation
+        if (saveError.message.includes('DUPLICATE_USERNAME')) {
+          setError(`Username "${username}" is already taken. Please choose another.`);
+        } else if (saveError.message.includes('DUPLICATE_EMAIL')) {
+          setError(`Email "${email}" is already registered. Please use a different email.`);
+        } else {
+          setError('Failed to create account. Please try again.');
+        }
+        return;
+      }
 
       console.log('✅ [Manager Account Created]', { username });
 
@@ -516,28 +591,31 @@ const ManagerLogin = ({ onBack }) => {
       const date = timestamp.split('T')[0];
       const time = now.toTimeString().split(' ')[0];
 
-      // Log signup event
-      await addHistoryLog({
-        type: 'User Signup',
-        description: `New Manager account created: ${username}`,
-        user: username,
-        role: 'Manager',
-        timestamp,
-        date,
-        time
-      });
-
-      // Auto-login after signup
+      // Set session data BEFORE logging (so user_id is available for history logs)
       sessionStorage.setItem('userRole', 'Manager');
       sessionStorage.setItem('username', username);
       sessionStorage.setItem('userId', authData.user.id);
       sessionStorage.setItem('supabaseSessionToken', authData.session?.access_token || '');
 
+      // Log signup event with explicit userId
+      await addHistoryLog({
+        type: 'User Signup',
+        description: `New Manager account created: ${username}`,
+        user: username,
+        role: 'Manager',
+        userId: authData.user.id,
+        timestamp,
+        date,
+        time
+      });
+
+      // Log login event
       await addHistoryLog({
         type: 'Manager Login',
         description: `Manager ${username} logged in`,
         user: username,
         role: 'Manager',
+        userId: authData.user.id,
         timestamp,
         date,
         time
@@ -574,7 +652,7 @@ const ManagerLogin = ({ onBack }) => {
             <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
             <input 
               type="text" 
-              placeholder="Username"
+              placeholder="Username or Email"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               className="w-full pl-12 pr-4 py-4 bg-white border-2 border-gray-200 rounded-xl focus:border-blue-600 focus:ring-0 transition-all text-lg outline-none"

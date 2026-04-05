@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { getTransactions, getNotifications, getInventory, getRecipes } from '../../services/mockDatabase';
 import { checkAllExpirations } from '../../services/notificationService';
 import rawTransactionsCsv from '../../../data/transactions.csv?raw';
@@ -12,6 +12,11 @@ const Dashboard = () => {
   const [transactions, setTransactions] = useState([]);
   const [recipes, setRecipes] = useState({});
   const [inventory, setInventory] = useState([]);
+  
+  // ============================================================================
+  // LOADING STATE - Prevent UI flickering during forecast calculations
+  // ============================================================================
+  const [isLoadingForecast, setIsLoadingForecast] = useState(false);
   
   // Metrics - daily orders and sales tracking
   const [todaysOrders, setTodaysOrders] = useState(0);
@@ -108,30 +113,67 @@ const Dashboard = () => {
     }
   }, [transactions, selectedCategory]);
 
-  // Update Forecast Chart when transactions, inventory, recipes, or period changes
-  useEffect(() => {
+  // ============================================================================
+  // MEMORY LEAK FIX: Consolidated Forecast Calculation
+  // ============================================================================
+  // Calculate ingredient forecast ONCE using useMemo (not in useEffect)
+  // This prevents re-calculation on every render and avoids duplicate computations
+  const ingredientForecastResult = useMemo(() => {
     if (transactions.length > 0) {
-      const forecastResult = forecastIngredientDemand(transactions, recipes, inventory, forecastPeriod);
-      const topInventoryItems = forecastResult.recommendations
-        .sort((a, b) => b.forecast - a.forecast)
-        .slice(0, 8);
-
-      setForecastData(topInventoryItems);
-      setForecastMAPE(forecastResult.confidence);
-      setNextPeriodForecast(forecastResult.totalForecast);
+      try {
+        return forecastIngredientDemand(transactions, recipes, inventory, forecastPeriod);
+      } catch (error) {
+        console.error('[Dashboard] Error calculating forecast:', error);
+        return {
+          recommendations: [],
+          confidence: 0,
+          totalForecast: 0,
+        };
+      }
     }
+    return null;
   }, [transactions, recipes, inventory, forecastPeriod]);
 
-  // Calculate Ingredient Forecast & Restocking Needs based on recipes
+  // Track loading state for UI feedback
   useEffect(() => {
-    if (transactions.length > 0) {
-        const ingredientForecastResult = forecastIngredientDemand(transactions, recipes, inventory, forecastPeriod);
-        setItemForecast(ingredientForecastResult);
+    if (ingredientForecastResult) {
+      setIsLoadingForecast(false);
+    }
+  }, [ingredientForecastResult]);
 
-        const restockPlan = calculateRestockingNeeds(ingredientForecastResult, inventory, { minStockDays: 2, maxStockDays: 5 });
+  // Update Forecast Chart using memoized result
+  useEffect(() => {
+    if (ingredientForecastResult) {
+      try {
+        const topInventoryItems = ingredientForecastResult.recommendations
+          .sort((a, b) => b.forecast - a.forecast)
+          .slice(0, 8);
+
+        setForecastData(topInventoryItems);
+        setForecastMAPE(ingredientForecastResult.confidence);
+        setNextPeriodForecast(ingredientForecastResult.totalForecast);
+      } catch (error) {
+        console.error('[Dashboard] Error updating forecast chart:', error);
+      }
+    }
+  }, [ingredientForecastResult]);
+
+  // Update Inventory Restocking Plan using memoized result
+  useEffect(() => {
+    if (ingredientForecastResult) {
+      try {
+        const restockPlan = calculateRestockingNeeds(ingredientForecastResult, inventory, { 
+          minStockDays: 2, 
+          maxStockDays: 5 
+        });
         setRestockingPlan(restockPlan);
+        setItemForecast(ingredientForecastResult);
+      } catch (error) {
+        console.error('[Dashboard] Error calculating restocking needs:', error);
+        setRestockingPlan([]);
+      }
     }
-  }, [transactions, recipes, inventory, forecastPeriod]);
+  }, [ingredientForecastResult, inventory]);
 
   const categories = ['Beverages', 'Main Dish', 'Side Dish', 'Desserts'];
 

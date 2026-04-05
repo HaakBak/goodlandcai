@@ -281,9 +281,13 @@ export const calculateMAPE = (actuals, forecasts) => {
   let totalError = 0;
   let count = 0;
   for (let i = 0; i < actuals.length; i++) {
-    if (actuals[i] !== 0) {
-      totalError += Math.abs((actuals[i] - forecasts[i]) / actuals[i]);
-      count++;
+    // PHASE 2.1 FIX: Validate forecasts[i] exists and is finite
+    if (actuals[i] !== 0 && i < forecasts.length && Number.isFinite(forecasts[i])) {
+      const error = Math.abs((actuals[i] - forecasts[i]) / actuals[i]);
+      if (Number.isFinite(error)) {
+        totalError += error;
+        count++;
+      }
     }
   }
   return count > 0 ? (totalError / count) * 100 : 0;
@@ -298,41 +302,93 @@ export const calculateMAPE = (actuals, forecasts) => {
  * - Yearly: Lower alpha to smooth out noise
  */
 export const holtWinters = (data, seasonLength, alpha = 0.3, beta = 0.1, gamma = 0.3) => {
-  const n = data.length;
-  if (n < seasonLength * 2) return data;
+  try {
+    const n = data.length;
+    
+    // PHASE 2.1 FIX: Minimum 7 data points required
+    if (n < 7) {
+      const forecast = new Array(n + 1);
+      const avgValue = data.length > 0 ? data.reduce((a, b) => a + b, 0) / data.length : 0;
+      for (let i = 0; i <= n; i++) {
+        forecast[i] = Number.isFinite(avgValue) ? avgValue : 0;
+      }
+      return forecast;
+    }
 
-  const smooth = new Array(n);
-  const trend = new Array(n);
-  const seasonal = new Array(n);
-  const forecast = new Array(n + 1);
+    if (n < seasonLength * 2) {
+      const forecast = new Array(n + 1);
+      const avgValue = data.reduce((a, b) => a + b, 0) / data.length;
+      for (let i = 0; i <= n; i++) {
+        forecast[i] = Number.isFinite(avgValue) ? avgValue : 0;
+      }
+      return forecast;
+    }
 
-  // Initial smoothing level
-  let sum = 0;
-  for (let i = 0; i < seasonLength; i++) sum += data[i];
-  smooth[seasonLength - 1] = sum / seasonLength;
+    const smooth = new Array(n);
+    const trend = new Array(n);
+    const seasonal = new Array(n);
+    const forecast = new Array(n + 1);
 
-  // Initial trend
-  let trendSum = 0;
-  for (let i = 0; i < seasonLength; i++) {
-    trendSum += (data[i + seasonLength] - data[i]) / seasonLength;
+    // Initial smoothing level
+    let sum = 0;
+    for (let i = 0; i < seasonLength; i++) sum += data[i];
+    smooth[seasonLength - 1] = sum / seasonLength;
+
+    // Initial trend
+    let trendSum = 0;
+    for (let i = 0; i < seasonLength; i++) {
+      trendSum += (data[i + seasonLength] - data[i]) / seasonLength;
+    }
+    trend[seasonLength - 1] = trendSum / seasonLength;
+
+    // Initial seasonal factors
+    for (let i = 0; i < seasonLength; i++) {
+      seasonal[i] = data[i] / smooth[seasonLength - 1];
+    }
+
+    // Triple exponential smoothing
+    for (let i = seasonLength; i < n; i++) {
+      smooth[i] = alpha * (data[i] / seasonal[i - seasonLength]) + (1 - alpha) * (smooth[i - 1] + trend[i - 1]);
+      trend[i] = beta * (smooth[i] - smooth[i - 1]) + (1 - beta) * trend[i - 1];
+      seasonal[i] = gamma * (data[i] / smooth[i]) + (1 - gamma) * seasonal[i - seasonLength];
+      
+      // PHASE 2.1 FIX: Bounds check before seasonal array access
+      const seasonalIdx = i - seasonLength + 1;
+      if (seasonalIdx >= 0 && seasonalIdx < seasonal.length) {
+        forecast[i] = (smooth[i] + trend[i]) * seasonal[seasonalIdx];
+      } else {
+        forecast[i] = smooth[i] + trend[i];
+      }
+    }
+
+    // PHASE 2.1 FIX: Final forecast with bounds check
+    const finalIdx = n - seasonLength;
+    if (finalIdx >= 0 && finalIdx < seasonal.length) {
+      forecast[n] = (smooth[n - 1] + trend[n - 1]) * seasonal[finalIdx];
+    } else {
+      forecast[n] = smooth[n - 1] + trend[n - 1];
+    }
+
+    // PHASE 2.1 FIX: Validate all values for NaN/Infinity
+    const avgFallback = data.reduce((a, b) => a + b, 0) / data.length;
+    for (let i = 0; i < forecast.length; i++) {
+      if (!Number.isFinite(forecast[i])) {
+        forecast[i] = Number.isFinite(avgFallback) ? avgFallback : 0;
+      }
+    }
+
+    return forecast;
+  } catch (error) {
+    // PHASE 2.1 FIX: Fallback on any error
+    console.error('[mlEngine] holtWinters error:', error);
+    const n = data.length;
+    const forecast = new Array(n + 1);
+    const avgValue = data.length > 0 ? data.reduce((a, b) => a + b, 0) / data.length : 0;
+    for (let i = 0; i <= n; i++) {
+      forecast[i] = Number.isFinite(avgValue) ? avgValue : 0;
+    }
+    return forecast;
   }
-  trend[seasonLength - 1] = trendSum / seasonLength;
-
-  // Initial seasonal factors
-  for (let i = 0; i < seasonLength; i++) {
-    seasonal[i] = data[i] / smooth[seasonLength - 1];
-  }
-
-  // Triple exponential smoothing
-  for (let i = seasonLength; i < n; i++) {
-    smooth[i] = alpha * (data[i] / seasonal[i - seasonLength]) + (1 - alpha) * (smooth[i - 1] + trend[i - 1]);
-    trend[i] = beta * (smooth[i] - smooth[i - 1]) + (1 - beta) * trend[i - 1];
-    seasonal[i] = gamma * (data[i] / smooth[i]) + (1 - gamma) * seasonal[i - seasonLength];
-    forecast[i] = (smooth[i] + trend[i]) * seasonal[i - seasonLength + 1];
-  }
-
-  forecast[n] = (smooth[n - 1] + trend[n - 1]) * seasonal[n - seasonLength];
-  return forecast;
 };
 
 /**
@@ -592,7 +648,8 @@ export const calculateItemForecast = (transactions, period = 'monthly') => {
 
   // Forecast for each item
   itemSales.forEach((sales, itemName) => {
-    if (sales.length < 2) {
+    // PHASE 2.1 FIX: Require 7+ data points for reliable forecasting
+    if (sales.length < 7) {
       // Not enough data
       byItem[itemName] = {
         historicalAvg: sales.reduce((sum, s) => sum + s.quantity, 0) / sales.length || 0,
@@ -613,7 +670,20 @@ export const calculateItemForecast = (transactions, period = 'monthly') => {
     const beta = 0.12;
     const gamma = 0.28;
 
-    const forecasts = holtWinters(quantities, seasonLength, alpha, beta, gamma);
+    // PHASE 2.1 FIX: Add try-catch for forecast calculation
+    let forecasts;
+    try {
+      forecasts = holtWinters(quantities, seasonLength, alpha, beta, gamma);
+    } catch (error) {
+      console.error(`[mlEngine] Item forecast error for ${itemName}:`, error);
+      byItem[itemName] = {
+        historicalAvg: 0,
+        forecast: 0,
+        accuracy: 0,
+        recommendation: 'Forecast calculation failed'
+      };
+      return;
+    }
     
     // Calculate statistics
     const avgQuantity = quantities.reduce((a, b) => a + b, 0) / quantities.length;
@@ -845,7 +915,8 @@ export const forecastIngredientDemand = (transactions, recipes, currentInventory
       : 0;
 
     const safetyStockBase = parseFloat((avgUsage * 0.2).toFixed(2));
-    if (quantities.length < 2) {
+    // PHASE 2.1 FIX: Require 7+ data points for ingredient forecasting
+    if (quantities.length < 7) {
       ingredientDemand[ingredientName] = {
         historicalAvg: parseFloat(avgUsage.toFixed(2)),
         forecast: 0,
@@ -864,7 +935,28 @@ export const forecastIngredientDemand = (transactions, recipes, currentInventory
     }
 
     const seasonLength = Math.max(3, Math.floor(quantities.length / 4));
-    const forecasts = holtWinters(quantities, seasonLength, 0.35, 0.12, 0.28);
+    // PHASE 2.1 FIX: Add try-catch for ingredient forecast calculation
+    let forecasts;
+    try {
+      forecasts = holtWinters(quantities, seasonLength, 0.35, 0.12, 0.28);
+    } catch (error) {
+      console.error(`[mlEngine] Ingredient forecast error for ${ingredientName}:`, error);
+      ingredientDemand[ingredientName] = {
+        historicalAvg: parseFloat(avgUsage.toFixed(2)),
+        forecast: 0,
+        safetyStock: 0,
+        mape: 0,
+        accuracy: 0,
+        confidence: 0,
+        currentStock: parseFloat(currentStock.toFixed(2)),
+        reorderPoint: parseFloat(reorderPoint.toFixed(2)),
+        daysUntilDepletion,
+        recommendedOrder: 0,
+        trend: 'stable',
+        priority: 'LOW',
+      };
+      return;
+    }
     const mape = calculateMAPE(quantities, forecasts.slice(0, quantities.length));
     const accuracy = Math.max(0, 100 - mape);
     const nextForecast = parseFloat((forecasts[quantities.length] || 0).toFixed(2));

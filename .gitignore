@@ -1,0 +1,42 @@
+# Environment Variables (NEVER commit .env files with secrets!)
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+package-lock.json
+npm-debug.log
+yarn-error.log
+
+# Production build
+dist/
+build/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Temporary files
+*.tmp
+.cache/
+.parcel-cache/
+
+# OS
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Sync Queue & Cache (temporary offline data)
+# Uncomment if you want to exclude sync state from version control:
+# _sync_queue
+
+# IDE settings
+.eslintcache
+.prettierignore

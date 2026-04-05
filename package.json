@@ -10,14 +10,17 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.100.0",
     "@tailwindcss/vite": "^4.1.17",
     "html2canvas": "^1.4.1",
-    "jspdf": "^3.0.4",
+    "jspdf": "^4.2.1",
+    "lucide-react": "^1.0.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-is": "^19.2.0",
     "react-router-dom": "^7.9.6",
     "recharts": "^3.5.1",
+    "supabase": "^2.84.4",
     "tailwindcss": "^4.1.17"
   },
   "devDependencies": {

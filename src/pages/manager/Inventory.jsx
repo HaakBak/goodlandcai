@@ -10,6 +10,7 @@ import {
   updateInventoryItem,
   getUsageLogs,
   addHistoryLog,
+  addUsageLog,
 } from '../../services/mockDatabase';
 import { showNotification, evaluateInventoryAlert, checkAllExpirations } from '../../services/notificationService';
 
@@ -77,67 +78,153 @@ const InventoryPage = () => {
   const [currentRecipe, setCurrentRecipe] = useState([]);
   const [recipeSearch, setRecipeSearch] = useState('');
 
+  // PHASE 2.3 FIX: Add state for loading and error tracking
+  const [isLoadingData, setIsLoadingData] = useState(false);
+  const [dataLoadError, setDataLoadError] = useState(null);
+
+  // PHASE 2.3 FIX: Helper to add timeout protection (30 second max per request)
+  const fetchWithTimeout = (promise, timeoutMs = 30000) => {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Request timeout - took longer than 30 seconds')), timeoutMs)
+      ),
+    ]);
+  };
+
+  // PHASE 2.3 FIX: Helper for retry logic with exponential backoff (500ms, 1s, 2s)
+  const fetchWithRetry = async (fn, maxRetries = 3, backoffMs = 500) => {
+    let lastError;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await fetchWithTimeout(fn(), 30000);
+      } catch (error) {
+        lastError = error;
+        if (attempt < maxRetries) {
+          const delay = backoffMs * Math.pow(2, attempt - 1);
+          console.log(`[Inventory] Retry attempt ${attempt + 1}/${maxRetries} in ${delay}ms for:`, error.message);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+    throw lastError;
+  };
+
   useEffect(() => {
     refreshData();
   }, []);
 
   const refreshData = async () => {
-    const [invData, supData, menuData, recipeData, logData] = await Promise.all([
-      getInventory(),
-      getSuppliers(),
-      getMenu(),
-      getRecipes(),
-      getUsageLogs(),
-    ]);
-    setInventory(invData);
-    setSuppliers(supData);
-    setMenu(menuData);
-    setRecipes(recipeData);
-    setUsageLogs(logData);
+    setIsLoadingData(true);
+    setDataLoadError(null);
 
-    const missingRecipeItems = menuData.filter((menuItem) => {
-      const recipeRow = recipeData[menuItem.id];
-      return !recipeRow || !Array.isArray(recipeRow.ingredients) || recipeRow.ingredients.length === 0;
-    });
-    setMenuRecipeWarnings(missingRecipeItems);
-
-    if (missingRecipeItems.length > 0 && !hasLoggedMissingRecipeWarning) {
-      const warningMessage = `⚠️ ${missingRecipeItems.length} menu item${missingRecipeItems.length === 1 ? '' : 's'} are missing recipes. Add recipes to ensure inventory forecasting.`;
-      showNotification({
-        message: warningMessage,
-        type: 'warning',
-        category: 'MISSING_RECIPE',
-        itemName: 'Menu Recipe Check',
-        severity: 'medium',
-      });
-
-      try {
-        const now = new Date();
-        const { username, userRole } = getCurrentUserInfo();
-        await addHistoryLog({
-          type: 'Missing Recipe Warning',
-          description: `Missing recipes for menu item${missingRecipeItems.length === 1 ? '' : 's'}: ${missingRecipeItems.map(item => item.name).join(', ')}`,
-          user_name: username,
-          user: username,
-          role: userRole,
-          timestamp: now.toISOString(),
-          date: now.toISOString().split('T')[0],
-          time: now.toTimeString().split(' ')[0],
-        });
-        setHasLoggedMissingRecipeWarning(true);
-      } catch (error) {
-        console.error('[Inventory] Failed to log missing recipe warning:', error);
-      }
-    }
-
-    // Check expiration dates for all perishable items
     try {
-      const expiredNotifications = checkAllExpirations(invData);
-      if (expiredNotifications.length > 0) {
-        console.log(`⏰ [Inventory Page] Found ${expiredNotifications.length} expired items`);
+      // PHASE 2.3 FIX: Use Promise.allSettled instead of Promise.all
+      // This allows us to handle both successes and failures gracefully
+      const results = await Promise.allSettled([
+        fetchWithRetry(() => getInventory()),
+        fetchWithRetry(() => getSuppliers()),
+        fetchWithRetry(() => getMenu()),
+        fetchWithRetry(() => getRecipes()),
+        fetchWithRetry(() => getUsageLogs()),
+      ]);
+
+      // PHASE 2.3 FIX: Process results with fallback values
+      const invData = results[0].status === 'fulfilled' ? results[0].value : [];
+      const supData = results[1].status === 'fulfilled' ? results[1].value : [];
+      const menuData = results[2].status === 'fulfilled' ? results[2].value : [];
+      const recipeData = results[3].status === 'fulfilled' ? results[3].value : {};
+      const logData = results[4].status === 'fulfilled' ? results[4].value : [];
+
+      // PHASE 2.3 FIX: Log any failures for debugging
+      const failures = [
+        { name: 'Inventory', status: results[0].status, error: results[0].reason },
+        { name: 'Suppliers', status: results[1].status, error: results[1].reason },
+        { name: 'Menu', status: results[2].status, error: results[2].reason },
+        { name: 'Recipes', status: results[3].status, error: results[3].reason },
+        { name: 'Usage Logs', status: results[4].status, error: results[4].reason },
+      ].filter(r => r.status === 'rejected');
+
+      if (failures.length > 0) {
+        console.error('[Inventory] Data load failures:');
+        failures.forEach(f => console.error(`  - ${f.name}: ${f.error?.message || 'Unknown error'}`));
+        
+        // PHASE 2.3 FIX: Show user-friendly error notification
+        const failedNames = failures.map(f => f.name).join(', ');
+        showNotification({
+          message: `⚠️ Failed to load: ${failedNames}. Using cached data.`,
+          type: 'warning',
+          category: 'DATA_LOAD_ERROR',
+          itemName: 'Data Load',
+          severity: 'medium',
+        });
+        setDataLoadError(`${failures.length} data source(s) failed`);
+      }
+
+      // Update state with loaded or fallback data
+      setInventory(invData);
+      setSuppliers(supData);
+      setMenu(menuData);
+      setRecipes(recipeData);
+      setUsageLogs(logData);
+
+      const missingRecipeItems = menuData.filter((menuItem) => {
+        const recipeRow = recipeData[menuItem.id];
+        return !recipeRow || !Array.isArray(recipeRow.ingredients) || recipeRow.ingredients.length === 0;
+      });
+      setMenuRecipeWarnings(missingRecipeItems);
+
+      if (missingRecipeItems.length > 0 && !hasLoggedMissingRecipeWarning) {
+        const warningMessage = `⚠️ ${missingRecipeItems.length} menu item${missingRecipeItems.length === 1 ? '' : 's'} are missing recipes. Add recipes to ensure inventory forecasting.`;
+        showNotification({
+          message: warningMessage,
+          type: 'warning',
+          category: 'MISSING_RECIPE',
+          itemName: 'Menu Recipe Check',
+          severity: 'medium',
+        });
+
+        try {
+          const now = new Date();
+          const { username, userRole } = getCurrentUserInfo();
+          await addHistoryLog({
+            type: 'Missing Recipe Warning',
+            description: `Missing recipes for menu item${missingRecipeItems.length === 1 ? '' : 's'}: ${missingRecipeItems.map(item => item.name).join(', ')}`,
+            user_name: username,
+            user: username,
+            role: userRole,
+            timestamp: now.toISOString(),
+            date: now.toISOString().split('T')[0],
+            time: now.toTimeString().split(' ')[0],
+          });
+          setHasLoggedMissingRecipeWarning(true);
+        } catch (error) {
+          console.error('[Inventory] Failed to log missing recipe warning:', error);
+        }
+      }
+
+      // Check expiration dates for all perishable items
+      try {
+        const expiredNotifications = checkAllExpirations(invData);
+        if (expiredNotifications.length > 0) {
+          console.log(`⏰ [Inventory Page] Found ${expiredNotifications.length} expired items`);
+        }
+      } catch (error) {
+        console.error('[Inventory] Error checking expirations:', error);
       }
     } catch (error) {
-      console.error('[Inventory] Error checking expirations:', error);
+      // PHASE 2.3 FIX: Catch-all error handler
+      console.error('[Inventory] Unexpected error during data refresh:', error);
+      setDataLoadError('Failed to load inventory data');
+      showNotification({
+        message: '❌ Error loading inventory data. Please try refreshing the page.',
+        type: 'error',
+        category: 'CRITICAL_ERROR',
+        itemName: 'Inventory Load',
+        severity: 'high',
+      });
+    } finally {
+      setIsLoadingData(false);
     }
   };
 
@@ -301,6 +388,33 @@ const InventoryPage = () => {
 
     await addInventoryItem(newItem);
     
+    // LOG USAGE: Record new item addition to usage logs
+    try {
+      await addUsageLog({
+        user_id: sessionStorage.getItem('userId'),
+        action: 'INVENTORY_ITEM_ADDED',
+        details: {
+          item_id: newItem.id,
+          item_name: newItem.name,
+          initial_stock: newItem.inStock,
+          cost: newItem.cost,
+          type: newItem.type,
+          measurement_unit: newItem.measurementUnit,
+          measurement_qty: newItem.measurementQty,
+          low_stock_threshold: newItem.lowStockThreshold,
+          expiration_date: newItem.expirationDate || null,
+          change_reason: 'New inventory item created'
+        }
+      });
+      console.log('✅ [Usage Log Created for New Item]', {
+        item: newItem.name,
+        initialStock: newItem.inStock
+      });
+    } catch (err) {
+      console.warn('[Inventory] Could not log new item usage:', err);
+      // Continue with process even if usage log fails
+    }
+    
     // CHECK: Evaluate if item should trigger an alert based on initial stock
     // This handles cases where a new item is added with stock already at/below threshold
     if (newItem.inStock <= newItem.lowStockThreshold) {
@@ -432,6 +546,36 @@ const InventoryPage = () => {
     // UPDATE the item in database
     await updateInventoryItem(editingItem.id, updatedItemData);
 
+    // LOG USAGE: Record inventory deduction to usage logs for audit trail
+    if (oldStock !== newStock) {
+      try {
+        const stockChange = newStock - oldStock; // Negative if reduced, positive if increased
+        await addUsageLog({
+          user_id: sessionStorage.getItem('userId'),
+          action: 'INVENTORY_ADJUSTMENT',
+          details: {
+            item_id: editingItem.id,
+            item_name: editFormData.name,
+            old_stock: oldStock,
+            new_stock: newStock,
+            change: stockChange,
+            change_reason: 'Manual inventory adjustment via Inventory Editor',
+            measurement_unit: editFormData.measurementUnit,
+            measurement_qty: editFormData.measurementQty,
+          }
+        });
+        console.log('✅ [Usage Log Created for Stock Adjustment]', {
+          item: editFormData.name,
+          oldStock,
+          newStock,
+          change: stockChange
+        });
+      } catch (err) {
+        console.warn('[Inventory] Could not log usage:', err);
+        // Continue with update even if usage log fails
+      }
+    }
+
     // ALERT LOGIC: Evaluate if the stock change should trigger an alert notification
     if (oldStock !== newStock) {
       console.log('🔄 [Stock Level Changed]', {
@@ -552,34 +696,63 @@ const InventoryPage = () => {
 
   const handleSaveRecipe = async () => {
     if (!selectedDish) return;
+    
+    // ✅ Validate that recipe has ingredients
+    if (!currentRecipe || currentRecipe.length === 0) {
+      alert('⚠️ Recipe must have at least one ingredient before saving!');
+      return;
+    }
+    
+    // ✅ Validate all ingredients have valid inventory IDs
+    const invalidIngredients = currentRecipe.filter(ing => 
+      !ing.inventoryId || 
+      ing.inventoryId === 'ffffffff-ffff-ffff-ffff-ffffffffffff' ||
+      ing.inventoryId === '' ||
+      !ing.name ||
+      ing.quantity <= 0
+    );
+    
+    if (invalidIngredients.length > 0) {
+      const invalidNames = invalidIngredients.map(i => i.name || 'Unknown Ingredient').join(', ');
+      alert(`⚠️ Invalid ingredients found:\n${invalidNames}\n\nPlease remove these and re-add them properly from the inventory list.`);
+      return;
+    }
+    
     const recipePayload = {
       id: selectedDish.recipeId || undefined,
       ingredients: currentRecipe,
     };
-    await saveRecipe(selectedDish.id, recipePayload);
     
-    const now = new Date();
-    const { username, userRole } = getCurrentUserInfo();
-    addHistoryLog({
-      type: 'Recipe Change',
-      description: `Updated recipe for: ${selectedDish.name} (${currentRecipe.length} ingredients)`,
-      user_name: username,
-      user: username,
-      role: userRole,
-      timestamp: now.toISOString(),
-      date: now.toISOString().split('T')[0],
-      time: now.toTimeString().split(' ')[0]
-    });
-    
-    await refreshData();
-    setShowAutoModal(false);
-    setSelectedDish(null);
-    setCurrentRecipe([]);
+    try {
+      await saveRecipe(selectedDish.id, recipePayload);
+      
+      const now = new Date();
+      const { username, userRole } = getCurrentUserInfo();
+      addHistoryLog({
+        type: 'Recipe Change',
+        description: `${selectedDish.recipeId ? 'Updated' : 'Created'} recipe for: ${selectedDish.name} (${currentRecipe.length} ingredients)`,
+        user_name: username,
+        user: username,
+        role: userRole,
+        timestamp: now.toISOString(),
+        date: now.toISOString().split('T')[0],
+        time: now.toTimeString().split(' ')[0]
+      });
+      
+      console.log('[Inventory] ✅ Recipe saved for:', selectedDish.name);
+      await refreshData();
+      setShowAutoModal(false);
+      setSelectedDish(null);
+      setCurrentRecipe([]);
+    } catch (error) {
+      console.error('[Inventory] ❌ Failed to save recipe:', error);
+      alert('❌ Failed to save recipe. Please try again.');
+    }
   };
 
   // ✏️ EDIT: Original inline sorting logic using if-else chains (retains original function)
   const filteredInventory = inventory
-    .filter((i) => i.name.toLowerCase().includes(search.toLowerCase()))
+    .filter((i) => i && i.name && i.name.toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) => {
       if (sortOrder === 'most') return b.inStock - a.inStock;
       if (sortOrder === 'least') return a.inStock - b.inStock;
@@ -592,7 +765,7 @@ const InventoryPage = () => {
 
   // ✏️ EDIT: Original inline sorting logic for kitchen inventory
   const filteredKitchenInventory = inventory
-    .filter((i) => i.name.toLowerCase().includes(search.toLowerCase()))
+    .filter((i) => i && i.name && i.name.toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) => {
       if (sortOrder === 'most') return b.openStock - a.openStock;
       if (sortOrder === 'least') return a.openStock - b.openStock;
@@ -605,7 +778,7 @@ const InventoryPage = () => {
 
   // ✏️ EDIT: Original inline sorting logic for usage logs
   const filteredUsageLogs = usageLogs
-    .filter((l) => l.itemName.toLowerCase().includes(search.toLowerCase()))
+    .filter((l) => l && l.itemName && l.itemName.toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) => {
       if (sortOrder === 'most') return b.quantityUsed - a.quantityUsed;
       if (sortOrder === 'least') return a.quantityUsed - b.quantityUsed;
@@ -620,11 +793,11 @@ const InventoryPage = () => {
 
   const modalInventoryList = inventory.filter(
     (i) =>
-      i.name.toLowerCase().includes(recipeSearch.toLowerCase()) 
+      i && i.name && i.name.toLowerCase().includes(recipeSearch.toLowerCase()) 
   );
 
   const editInventoryList = inventory.filter((i) =>
-    i.name.toLowerCase().includes(recipeSearch.toLowerCase())
+    i && i.name && i.name.toLowerCase().includes(recipeSearch.toLowerCase())
   );
 
   return (

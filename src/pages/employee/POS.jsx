@@ -1,13 +1,125 @@
 import React, { useState, useEffect } from 'react';
-import { getMenu, saveTransaction, getTransactions, resetMenu, getBusinessInfo, getServiceFees, addHistoryLog } from '../../services/mockDatabase';
+import { getMenu, saveTransaction, getTransactions, resetMenu, getBusinessInfo, getServiceFees, addHistoryLog, getInventory, getRecipes, updateInventoryItem, addUsageLog } from '../../services/mockDatabase';
 import { generateReceiptPDF } from '../../services/receiptServices';
 import { useNavigate } from 'react-router-dom';
 
 // Helper function to get current user and role from session
 const getCurrentUserInfo = () => {
+  const userId = sessionStorage.getItem('userId') || null;
   const username = sessionStorage.getItem('username') || 'Unknown';
   const userRole = sessionStorage.getItem('userRole') || 'Unknown';
-  return { username, userRole };
+  return { userId, username, userRole };
+};
+
+const parseNumericValue = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const calculateRecipeUsage = (cart, recipes) => {
+  const usage = {};
+  console.log('[POS] 🔍 Calculating recipe usage. Recipes available:', Object.keys(recipes).length);
+  
+  cart.forEach((cartItem) => {
+    const dishId = cartItem.menuItem?.id;
+    const recipe = recipes?.[dishId] || recipes?.[String(dishId)];
+    
+    if (!recipe) {
+      console.warn(`[POS] ⚠️ No recipe found for dish ID: ${dishId}`);
+      return;
+    }
+    
+    if (!recipe?.ingredients || !Array.isArray(recipe.ingredients)) {
+      console.warn(`[POS] ⚠️ Recipe for ${dishId} has no ingredients`);
+      return;
+    }
+    
+    console.log(`[POS] 📋 Recipe for ${cartItem.menuItem?.name}:`, recipe.ingredients);
+    
+    const quantityMultiplier = parseNumericValue(cartItem.quantity);
+    recipe.ingredients.forEach((ingredient) => {
+      const inventoryId = ingredient.inventoryId || ingredient.id;
+      
+      // ✅ Skip invalid/null UUIDs
+      if (!inventoryId || inventoryId === 'ffffffff-ffff-ffff-ffff-ffffffffffff' || inventoryId === '') {
+        console.warn('[POS] ⚠️ SKIPPING: Invalid ingredient UUID detected:', { ingredient, inventoryId });
+        console.warn('[POS] ⚠️ This recipe has corrupted ingredient data and needs to be recreated!');
+        return;
+      }
+      
+      const ingredientQty = parseNumericValue(ingredient.quantity ?? ingredient.qty ?? ingredient.amount);
+      
+      if (!ingredientQty || ingredientQty <= 0 || quantityMultiplier <= 0) {
+        console.warn('[POS] ⚠️ Skipping ingredient with invalid quantity:', { ingredient, ingredientQty, quantityMultiplier });
+        return;
+      }
+      
+      const totalQty = ingredientQty * quantityMultiplier;
+      usage[inventoryId] = (usage[inventoryId] || 0) + totalQty;
+      console.log(`[POS]   - ${ingredient.name}: ${inventoryId} (qty: ${totalQty})`);
+    });
+  });
+  
+  return usage;
+};
+
+const deductInventoryFromCart = async (cart) => {
+  if (!cart || cart.length === 0) return;
+
+  const [recipes, inventory] = await Promise.all([getRecipes(), getInventory()]);
+  const usageMap = calculateRecipeUsage(cart, recipes);
+
+  // Debug logging
+  console.log('[POS] Recipe usage map:', usageMap);
+  console.log('[POS] Available inventory IDs:', inventory.map(i => i.id));
+  
+  // ✅ Check if recipe usage map is empty (all ingredients were invalid)
+  if (Object.keys(usageMap).length === 0) {
+    console.warn('[POS] ⚠️ WARNING: No valid ingredients to deduct from recipes!');
+    console.warn('[POS] ⚠️ This may indicate corrupted recipe data.');
+    console.warn('[POS] ⚠️ Please check and recreate recipes in Inventory Manager.');
+    // Allow transaction to proceed without inventory deduction
+    // This prevents users from being stuck
+    return;
+  }
+
+  const updates = Object.entries(usageMap).map(([inventoryId, quantityUsed]) => {
+    const inventoryItem = inventory.find((item) => item.id === inventoryId);
+    if (!inventoryItem) {
+      console.error('[POS] ❌ Inventory item not found for deduction:', inventoryId);
+      console.error('[POS] This ID was not found in inventory. Possible causes:');
+      console.error('[POS]   1. Recipe ingredients use wrong ID (menu item ID instead of inventory ID)');
+      console.error('[POS]   2. Inventory item was deleted after recipe was created');
+      console.error('[POS]   3. RLS policy blocking inventory reads');
+      return Promise.resolve();
+    }
+
+    const currentStock = parseNumericValue(inventoryItem.stock ?? inventoryItem.stock_level ?? inventoryItem.quantity ?? inventoryItem.inStock);
+    const newStock = Math.max(0, currentStock - quantityUsed);
+    
+    // Log the deduction for audit trail
+    addUsageLog({
+      user_id: getCurrentUserInfo().userId,
+      action: 'RECIPE_DEDUCTION',
+      details: {
+        inventory_item_id: inventoryId,
+        inventory_item_name: inventoryItem.name,
+        quantity_deducted: quantityUsed,
+        measurement_unit: inventoryItem.measurementUnit || inventoryItem.unit,
+        old_stock: currentStock,
+        new_stock: newStock,
+        timestamp: new Date().toISOString()
+      }
+    }).catch(err => {
+      console.warn('[POS] Could not log deduction:', err);
+    });
+
+    console.log(`[POS] ✅ Deducting ${quantityUsed} from ${inventoryItem.name} (${currentStock} → ${newStock})`);
+    return updateInventoryItem(inventoryId, { in_stock: newStock });
+  });
+
+  await Promise.all(updates);
+  console.log('[POS] 📦 Inventory deduction completed');
 };
 
 const POS = () => {
@@ -63,14 +175,24 @@ const POS = () => {
     (category === 'All' || item.category === category)
   );
 
+  const getSelectedPrice = (cartItem) => {
+    if (cartItem.selectedSize && cartItem.menuItem.sizes?.[cartItem.selectedSize]) {
+      return cartItem.menuItem.sizes[cartItem.selectedSize].totalPrice ?? cartItem.menuItem.totalPrice ?? cartItem.menuItem.basePrice ?? 0;
+    }
+    return cartItem.menuItem.totalPrice ?? cartItem.menuItem.basePrice ?? 0;
+  };
+
+  const getSelectedVat = (cartItem) => {
+    if (cartItem.selectedSize && cartItem.menuItem.sizes?.[cartItem.selectedSize]) {
+      return cartItem.menuItem.sizes[cartItem.selectedSize].VAT_fee ?? cartItem.menuItem.VAT_fee ?? 0;
+    }
+    return cartItem.menuItem.VAT_fee ?? 0;
+  };
+
   // Calculate totals based on totalPrice (VAT-inclusive price shown to customers)
   // Account for size-specific pricing
   const baseAmount = cart.reduce((sum, item) => {
-    let itemPrice = item.menuItem.totalPrice;
-    // If item has a selected size, use the size-specific price
-    if (item.selectedSize && item.menuItem.sizes?.[item.selectedSize]) {
-      itemPrice = item.menuItem.sizes[item.selectedSize].totalPrice;
-    }
+    const itemPrice = getSelectedPrice(item);
     return sum + (itemPrice * item.quantity);
   }, 0);
   
@@ -82,11 +204,7 @@ const POS = () => {
   // If customer has discount (PWD/Senior), they are exempted from VAT
   // So we subtract the VAT portion from the discounted amount
   const vatPortion = cart.reduce((sum, item) => {
-    let itemVAT = item.menuItem.VAT_fee;
-    // If item has a selected size, use the size-specific VAT
-    if (item.selectedSize && item.menuItem.sizes?.[item.selectedSize]) {
-      itemVAT = item.menuItem.sizes[item.selectedSize].VAT_fee;
-    }
+    const itemVAT = getSelectedVat(item);
     return sum + (itemVAT * item.quantity);
   }, 0);
   // Note: For regular customers, VAT is inside the total, so we display it but don't deduct it from the total payable.
@@ -112,7 +230,7 @@ const POS = () => {
     }
     
     try {
-        const { username, userRole } = getCurrentUserInfo();
+        const { userId, username, userRole } = getCurrentUserInfo();
         const transactions = await getTransactions();
         const nextOrderNum = (transactions.length + 1);
         const timeNow = new Date().toLocaleTimeString();
@@ -120,13 +238,14 @@ const POS = () => {
         // 1. Construct Transaction Object with timestamp for daily metrics tracking
         const newTransaction = {
             id: crypto.randomUUID(),
+            user_id: userId,
             orderNumber: nextOrderNum,
             items: cart.map(item => ({
               ...item,
               menuItem: {
                 ...item.menuItem,
-                totalPrice: item.menuItem.totalPrice || 0,
-                VAT_fee: item.menuItem.VAT_fee || 0
+                totalPrice: getSelectedPrice(item),
+                VAT_fee: getSelectedVat(item)
               }
             })),
             baseAmount: baseAmount,
@@ -146,6 +265,14 @@ const POS = () => {
 
         // 2. Save Transaction
         await saveTransaction(newTransaction);
+
+        // Update inventory immediately after transaction completes
+        try {
+          await deductInventoryFromCart(cart);
+          console.log('📦 [Inventory Deducted] transaction consumption applied to inventory');
+        } catch (error) {
+          console.warn('[POS] Inventory deduction failed', error);
+        }
 
         // Note: Transaction logs are stored only in TRANSACTIONS table (for manager viewing only)
         // Admin activity logs do NOT show employee transactions - only in manager's transaction logs
@@ -280,7 +407,7 @@ const POS = () => {
                             <div className="flex flex-col">
                                 <span className="font-medium text-slate-800">{item.menuItem.name}</span>
                                 {item.selectedSize && <span className="text-xs text-slate-500">{item.selectedSize}</span>}
-                                <span className="text-sm text-slate-600">₱ {item.menuItem.totalPrice}</span>
+                                <span className="text-sm text-slate-600">₱ {getSelectedPrice(item).toFixed(2)}</span>
                             </div>
                             <div className="flex items-center gap-2">
                                 <span className="font-semibold text-base bg-white text-slate-700 px-2 py-1 rounded-md border border-slate-200">x{item.quantity}</span>

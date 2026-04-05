@@ -47,6 +47,8 @@ import {
   addUsageLog,
   getServiceFees,
   saveServiceFees,
+  getAdminUserProfile,
+  verifyAdminUserInSupabase,
 } from './databaseService';
 
 // ============================================================================
@@ -82,4 +84,6 @@ export {
   addUsageLog,
   getServiceFees,
   saveServiceFees,
+  getAdminUserProfile,
+  verifyAdminUserInSupabase,
 };

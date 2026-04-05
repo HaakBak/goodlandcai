@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { addHistoryLog } from '../services/mockDatabase';
+import { addHistoryLog, getSupabaseClient } from '../services/databaseService';
 import { clearUserSession } from '../services/privilegeService';
 import { LogOut, ShieldCheck, History } from 'lucide-react';
 
@@ -17,11 +17,7 @@ const Sidebar = ({ role, historyData = [], username = 'Manager' }) => {
     
     console.log('🚪 [User Logout Initiated]', { role, username: actualUsername, userId: actualUserId });
     
-    // 🔐 SECURITY: Clear user session and stored roles from sessionStorage
-    clearUserSession();
-    console.log('💾 [SessionStorage Cleared - All userRole and username keys removed]');
-    
-    // Determine logout type and description based on role
+    // STEP 1: Determine logout type and description based on role
     let logoutType = 'Logout';
     let description = '';
     let logRole = 'Unknown';
@@ -40,18 +36,46 @@ const Sidebar = ({ role, historyData = [], username = 'Manager' }) => {
       logRole = 'Manager';
     }
     
-    await addHistoryLog({
-      userId: actualUserId,
-      type: logoutType,
-      description: description,
-      user: actualUsername,
-      role: logRole,
-      timestamp: now.toISOString(),
-      date: now.toISOString().split('T')[0],
-      time: now.toTimeString().split(' ')[0]
-    });
-    console.log('✅ [Logout recorded in history]', { type: logoutType, user: actualUsername });
-    navigate('/');
+    // STEP 2: LOG HISTORY FIRST (while still authenticated with Supabase)
+    // This must happen BEFORE signing out, otherwise RLS policy blocks the insert
+    try {
+      await addHistoryLog({
+        userId: actualUserId,
+        type: logoutType,
+        description: description,
+        user: actualUsername,
+        role: logRole,
+        timestamp: now.toISOString(),
+        date: now.toISOString().split('T')[0],
+        time: now.toTimeString().split(' ')[0]
+      });
+      console.log('✅ [Logout recorded in history]', { type: logoutType, user: actualUsername });
+    } catch (err) {
+      console.warn('[Sidebar] Could not record logout in history:', err);
+      // Continue with logout even if history logging fails
+    }
+    
+    // STEP 3: THEN Sign out from Supabase
+    try {
+      const supabase = getSupabaseClient();
+      if (supabase) {
+        const { error } = await supabase.auth.signOut();
+        if (error) {
+          console.warn('[Sidebar] Warning during Supabase logout:', error);
+        } else {
+          console.log('[Sidebar] ✅ Supabase session signed out');
+        }
+      }
+    } catch (err) {
+      console.warn('[Sidebar] Could not sign out from Supabase:', err);
+    }
+    
+    // STEP 4: FINALLY Clear user session and stored roles from sessionStorage
+    clearUserSession();
+    console.log('💾 [SessionStorage Cleared - All userRole and username keys removed]');
+    
+    // Navigate to login page
+    navigate('/', { replace: true });
   };
 
   // Admin Sidebar

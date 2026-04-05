@@ -1,35 +1,46 @@
 // src/config/appConfig.js
 // Centralized app configuration with environment variable resolution.
-// Sensitive values loaded internally from .env; exported values do not expose environment source.
+// 
+// SECURITY NOTE: Only PUBLIC values should be exposed to frontend.
+// NEVER expose:
+// - Passwords or authentication credentials
+// - Private API keys (email, payment backend secrets)
+// - Database credentials
+// - Admin account credentials
+// 
+// Safe to expose (public information):
+// - Supabase ANON_KEY (Supabase handles token-level security)
+// - Analytics IDs (already public)
+// - Payment PUBLIC_KEY (meant for client-side)
+// - Business info (public metadata)
+// - Sentry DSN (for error tracking, already public)
 
 const ENV = import.meta.env;
 
 // Private helper function to safely load environment values
 const loadEnv = () => ({
-  mode: ENV.MODE || 'development',
-  appEnv: ENV.VITE_APP_ENV || 'development',
-  appName: ENV.VITE_APP_NAME || 'GoodLand Cafe',
-  appVersion: ENV.VITE_APP_VERSION || '1.0.0',
-  debugMode: ENV.VITE_DEBUG_MODE === 'true',
-  logLevel: ENV.VITE_LOG_LEVEL ,
+  mode: ENV.MODE,
+  appEnv: ENV.VITE_APP_ENV,
+  appName: ENV.VITE_APP_NAME,
+  appVersion: ENV.VITE_APP_VERSION,
+  debugMode: ENV.VITE_DEBUG_MODE,
+  logLevel: ENV.VITE_LOG_LEVEL,
   apiBaseUrl: ENV.VITE_API_BASE_URL,
-  apiTimeout: Number(ENV.VITE_API_TIMEOUT || 30000),
-  supabaseUrl: ENV.VITE_SUPABASE_URL || '',
-  supabaseAnonKey: ENV.VITE_SUPABASE_ANON_KEY || '',
-  emailApiKey: ENV.VITE_EMAIL_API_KEY || '',
-  paymentPublicKey: ENV.VITE_PAYMENT_PUBLIC_KEY || '',
-  analyticsId: ENV.VITE_ANALYTICS_ID || '',
-  sentryDsn: ENV.VITE_SENTRY_DSN || '',
-  businessTin: ENV.VITE_BUSINESS_TIN || '908-767-876-000',
-  businessName: ENV.VITE_BUSINESS_NAME || 'GoodLand Cafe',
-  businessStatus: ENV.VITE_BUSINESS_STATUS || 'VAT_Reg',
-  businessAddress: ENV.VITE_BUSINESS_ADDRESS || 'Cariño Street, Baguio City',
-  businessPhone: ENV.VITE_BUSINESS_PHONE || '(239) 555-0298',
-  serviceFeeDineIn: Number(ENV.VITE_SERVICE_FEE_DINEIN) || 3,
-  serviceFeeTakeout: Number(ENV.VITE_SERVICE_FEE_TAKEOUT) || 5,
-  adminUsername: ENV.VITE_ADMIN_USERNAME,
-  adminEmail: ENV.VITE_ADMIN_EMAIL,
-  adminPassword: ENV.VITE_ADMIN_PASSWORD,
+  apiTimeout: Number(ENV.VITE_API_TIMEOUT),
+  supabaseUrl: ENV.VITE_SUPABASE_URL,
+  supabaseAnonKey: ENV.VITE_SUPABASE_ANON_KEY,
+  // SECURITY: Public metrics only (not private keys)
+  paymentPublicKey: ENV.VITE_PAYMENT_PUBLIC_KEY,
+  analyticsId: ENV.VITE_ANALYTICS_ID,
+  sentryDsn: ENV.VITE_SENTRY_DSN,
+  businessTin: ENV.VITE_BUSINESS_TIN,
+  businessName: ENV.VITE_BUSINESS_NAME,
+  businessStatus: ENV.VITE_BUSINESS_STATUS,
+  businessAddress: ENV.VITE_BUSINESS_ADDRESS,
+  businessPhone: ENV.VITE_BUSINESS_PHONE,
+  serviceFeeDineIn: Number(ENV.VITE_SERVICE_FEE_DINEIN),
+  serviceFeeTakeout: Number(ENV.VITE_SERVICE_FEE_TAKEOUT),
+  adminUsername: ENV.VITE_ADMIN_USERNAME, // Identifier only, NOT credentials
 });
 
 const config = loadEnv();
@@ -53,11 +64,12 @@ export const SUPABASE_CONFIG = {
   ANON_KEY: config.supabaseAnonKey,
 };
 
+// SECURITY: Only public/safe values exposed
 export const EXTRA_KEYS = {
-  EMAIL_API_KEY: config.emailApiKey,
-  PAYMENT_PUBLIC_KEY: config.paymentPublicKey,
-  ANALYTICS_ID: config.analyticsId,
-  SENTRY_DSN: config.sentryDsn,
+  PAYMENT_PUBLIC_KEY: config.paymentPublicKey, // Safe: public key
+  ANALYTICS_ID: config.analyticsId,             // Safe: public ID
+  SENTRY_DSN: config.sentryDsn,                 // Safe: error tracking
+  // REMOVED: EMAIL_API_KEY (backend-only, never expose to frontend)
 };
 
 export const BUSINESS_DEFAULT_INFO = {
@@ -87,12 +99,15 @@ export const STORAGE_KEYS = {
   HISTORY: 'pos_history',
 };
 
+// SECURITY: Default user for offline/mock mode - NO PASSWORD STORED
+// In production: Always authenticate against Supabase
+// Admin credentials are managed in Supabase and never exposed to frontend
 export const ADMIN_DEFAULT_USER = {
   id: 'admin-id',
-  username: config.adminUsername,
-  email: config.adminEmail,
-  password: config.adminPassword,
+  username: config.adminUsername || 'admin',
   role: 'Administrator',
+  // REMOVED: email, password (never expose credentials in frontend)
+  // Frontend should authenticate against Supabase, not hardcoded credentials
 };
 
 // ============================================================================

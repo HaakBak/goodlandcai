@@ -182,6 +182,7 @@ export const validatePathAccess = (pathname) => {
 
 /**
  * Logout user and clear all role/auth data
+ * SECURITY: Clears ALL session tokens and sensitive identifiers
  */
 export const clearUserSession = () => {
   console.log('🔓 [Session Cleared - User Logout]');
@@ -193,4 +194,9 @@ export const clearUserSession = () => {
   // Clear new unified keys
   sessionStorage.removeItem('userRole');
   sessionStorage.removeItem('username');
+  // SECURITY FIX: Clear authentication tokens and user identifiers
+  sessionStorage.removeItem('supabaseSessionToken');
+  sessionStorage.removeItem('userId');
+  
+  console.log('✅ [All session tokens cleared]');
 };
