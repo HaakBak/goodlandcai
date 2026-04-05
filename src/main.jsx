@@ -1,3 +1,6 @@
+// 🔐 SECURITY: Disable console in production (must be first import)
+import './utils/consoleGuard.js';
+
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
