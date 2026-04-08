@@ -43,6 +43,7 @@ import {
   saveRecipe,
   getNotifications,
   addNotification,
+  updateNotification,
   getUsageLogs,
   addUsageLog,
   getServiceFees,
@@ -52,7 +53,7 @@ import {
 } from './databaseService';
 
 // ============================================================================
-// RE-EXPORT ALL 21 FUNCTIONS FOR BACKWARD COMPATIBILITY
+// RE-EXPORT ALL 22 FUNCTIONS FOR BACKWARD COMPATIBILITY
 // ============================================================================
 
 export {
@@ -80,6 +81,7 @@ export {
   saveRecipe,
   getNotifications,
   addNotification,
+  updateNotification,
   getUsageLogs,
   addUsageLog,
   getServiceFees,

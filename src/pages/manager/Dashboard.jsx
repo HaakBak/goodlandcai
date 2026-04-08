@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { getTransactions, getNotifications, getInventory, getRecipes } from '../../services/mockDatabase';
-import { checkAllExpirations } from '../../services/notificationService';
+import { getTransactions, getNotifications, getInventory, getRecipes, updateNotification, getUsers } from '../../services/mockDatabase';
+import { checkAllExpirations, autoResolveNotifications } from '../../services/notificationService';
+import { saveForecastBatch } from '../../services/forecastingService';
 import { calculateCategoryRanking, calculateItemForecast, calculateRestockingNeeds, forecastIngredientDemand } from '../../utils/mlEngine';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -30,6 +31,7 @@ const Dashboard = () => {
   const [forecastData, setForecastData] = useState([]);
   const [forecastMAPE, setForecastMAPE] = useState(0);
   const [nextPeriodForecast, setNextPeriodForecast] = useState(0);
+  const [forecastTimestamp, setForecastTimestamp] = useState(null);
   
   // Item Forecast & Restocking State
   const [itemForecast, setItemForecast] = useState(null);
@@ -37,31 +39,78 @@ const Dashboard = () => {
   
   // Notifications
   const [notifications, setNotifications] = useState([]);
+  const [notificationFilter, setNotificationFilter] = useState('relevant'); // 'relevant' or 'archived'
+  const [allNotifications, setAllNotifications] = useState([]); // Track all for filtering
+  const [userProfiles, setUserProfiles] = useState({}); // Map of userId -> username for audit trail
 
-  useEffect(() => {
-    const dedupeNotifications = (notes) => {
-      const seen = new Set();
-      return notes.filter((note) => {
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // DEDUPE NOTIFICATIONS - Available to all functions (moved out of useEffect)
+  // Filters and deduplicates notifications for display
+  // ═══════════════════════════════════════════════════════════════════════════════
+  const dedupeNotifications = (notes) => {
+    const seen = new Set();
+    return notes
+      .filter((note) => {
+        // Filter: Only show unhandled and handled notifications
+        // Hide archived and dismissed
+        const isActive = note.status === 'unhandled' || note.status === 'handled' || !note.status;
+        if (!isActive) return false;
+        
         const key = `${note.message}|${note.category}|${note.itemName}|${note.date}`;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
       });
-    };
+  };
 
+  useEffect(() => {
     const loadData = async () => {
-        const [data, notifs, inventoryData, recipeData] = await Promise.all([
+        const [data, notifs, inventoryData, recipeData, usersData] = await Promise.all([
           getTransactions(),
           getNotifications(),
           getInventory(),
           getRecipes(),
+          getUsers(),
         ]);
 
         // ✅ NEW: Use real transaction data from Supabase/POS directly (no CSV)
         const mergedTx = data || [];  // Use actual transactions from database
 
+        // ═══════════════════════════════════════════════════════════════════════════════
+        // BUILD USER PROFILE MAP FOR AUDIT TRAIL
+        // Maps user ID to username for showing who handled the notification
+        // ═══════════════════════════════════════════════════════════════════════════════
+        const userMap = {};
+        (usersData || []).forEach(user => {
+          if (user.id) {
+            userMap[user.id] = user.username || user.email || 'Unknown User';
+          }
+        });
+        setUserProfiles(userMap);
+
+        // ═══════════════════════════════════════════════════════════════════════════════
+        // AUTOMATIC NOTIFICATION RESOLUTION
+        // Check if any unhandled notifications can be auto-resolved based on current state
+        // ═══════════════════════════════════════════════════════════════════════════════
+        try {
+          const unhandledNotifs = (notifs || []).filter(n => !n.status || n.status === 'unhandled');
+          const resolvedCount = await autoResolveNotifications(unhandledNotifs, inventoryData, updateNotification);
+          
+          if (resolvedCount.length > 0) {
+            console.log(`🔄 [AutoResolve] Refreshing notifications after auto-resolution`);
+            // Refresh notifications after auto-resolution
+            notifs = await getNotifications();
+          }
+        } catch (error) {
+          console.error('[Dashboard] Error in auto-resolve notifications:', error);
+        }
+
         setTransactions(mergedTx);
-        setNotifications(dedupeNotifications(notifs).slice(0, 5));
+        // Store ALL notifications for filtering
+        setAllNotifications(notifs || []);
+        // Initially show relevant (unhandled) notifications
+        const relevantNotifs = (notifs || []).filter(n => !n.status || n.status === 'unhandled');
+        setNotifications(dedupeNotifications(relevantNotifs).slice(0, 5));
         setInventory(inventoryData);
         setRecipes(recipeData);
 
@@ -91,7 +140,19 @@ const Dashboard = () => {
 
         try {
             const n = await getNotifications();
-            setNotifications(dedupeNotifications(n).slice(0, 5));
+            const invData = await getInventory();
+            
+            // Auto-resolve any stale notifications based on current inventory
+            const unhandledNotifs = (n || []).filter(notif => !notif.status || notif.status === 'unhandled');
+            const resolvedCount = await autoResolveNotifications(unhandledNotifs, invData, updateNotification);
+            
+            if (resolvedCount.length > 0) {
+              // Refresh notifications after auto-resolution
+              const updatedNotifs = await getNotifications();
+              setNotifications(dedupeNotifications(updatedNotifs).slice(0, 5));
+            } else {
+              setNotifications(dedupeNotifications(n).slice(0, 5));
+            }
         } catch (error) {
             console.error('[Dashboard] Failed to refresh notifications on toast event:', error);
         }
@@ -151,11 +212,32 @@ const Dashboard = () => {
         setForecastData(topInventoryItems);
         setForecastMAPE(ingredientForecastResult.confidence);
         setNextPeriodForecast(ingredientForecastResult.totalForecast);
+        
+        // ✅ NEW: Set timestamp for when forecast was generated
+        const now = new Date();
+        setForecastTimestamp(now);
+
+        // ✅ NEW: Auto-save forecast to database
+        const saveForecasts = async () => {
+          const { success, error } = await saveForecastBatch(
+            topInventoryItems,
+            forecastPeriod,
+            ingredientForecastResult.confidence
+          );
+          
+          if (success) {
+            console.log(`📊 [Dashboard] Forecast auto-saved for ${forecastPeriod} period`);
+          } else {
+            console.warn('[Dashboard] Failed to save forecast:', error);
+          }
+        };
+        
+        saveForecasts();
       } catch (error) {
         console.error('[Dashboard] Error updating forecast chart:', error);
       }
     }
-  }, [ingredientForecastResult]);
+  }, [ingredientForecastResult, forecastPeriod]);
 
   // Update Inventory Restocking Plan using memoized result
   useEffect(() => {
@@ -175,6 +257,34 @@ const Dashboard = () => {
   }, [ingredientForecastResult, inventory]);
 
   const categories = ['Beverages', 'Main Dish', 'Side Dish', 'Desserts'];
+
+  // Handle notification status update (mark as handled, unhandled, or archive)
+  const handleNotificationAction = async (notificationId, newStatus) => {
+    try {
+      const { success, error } = await updateNotification(notificationId, { status: newStatus });
+      
+      if (success) {
+        console.log(`✅ Notification marked as ${newStatus}`);
+        
+        // Refresh all notifications from database to get updated status and handled_by info
+        const updatedNotifs = await getNotifications();
+        setAllNotifications(updatedNotifs);
+        
+        // Re-filter based on current filter tab
+        if (notificationFilter === 'relevant') {
+          const relevantNotifs = (updatedNotifs || []).filter(n => !n.status || n.status === 'unhandled');
+          setNotifications(dedupeNotifications(relevantNotifs).slice(0, 5));
+        } else {
+          const archivedNotifs = (updatedNotifs || []).filter(n => n.status === 'handled' || n.status === 'archived');
+          setNotifications(dedupeNotifications(archivedNotifs).slice(0, 5));
+        }
+      } else {
+        console.error(`❌ Failed to update notification: ${error}`);
+      }
+    } catch (error) {
+      console.error('[Dashboard] Error updating notification:', error);
+    }
+  };
 
   return (
     <div className="p-8 bg-gradient-to-br from-blue-50 via-white to-green-50 min-h-screen">
@@ -221,7 +331,6 @@ const Dashboard = () => {
                     </div>
                 </div>
                 
-                {/*Reconfigure Sales Forecasting by top sales based on amount of sold per day, month, year*/}
                 {/* Chart 2: Sales Forecasting (Holt-Winters Triple Exponential Smoothing) */}
                 <div className="border border-gray-200 p-6 rounded-2xl shadow-xl bg-white/80 backdrop-blur-sm hover:shadow-2xl transition-all duration-300 hover:scale-105">
                     <div className="flex justify-between items-center mb-6">
@@ -255,6 +364,22 @@ const Dashboard = () => {
                             ))}
                         </div>
                     </div>
+
+                    {/* Forecast Summary Display */}
+                    {forecastTimestamp && forecastData.length > 0 && (
+                        <div className="mb-4 bg-gradient-to-r from-blue-50 to-green-50 border border-blue-200 p-4 rounded-lg">
+                            <h4 className="font-bold text-gray-800 mb-3">
+                                {forecastPeriod === 'daily' && forecastTimestamp.toLocaleString('en-US', { month: 'long', day: 'numeric' })}
+                                {forecastPeriod === 'monthly' && `Month of ${forecastTimestamp.toLocaleString('en-US', { month: 'long' })}`}
+                                {forecastPeriod === 'yearly' && `Year ${forecastTimestamp.toLocaleString('en-US', { year: 'numeric' })}`}
+                                <span className="text-blue-600"> Forecast</span>
+                            </h4>
+                            <div className="text-sm text-gray-700 space-y-1">
+                                <p><strong>Total Predicted Demand:</strong> <span className="text-green-600 font-bold">{nextPeriodForecast.toFixed(0)} units</span></p>
+                                <p><strong>Top Item:</strong> <span className="text-blue-600 font-semibold">{forecastData[0]?.item}</span> ({forecastData[0]?.forecast.toFixed(1)} units)</p>
+                            </div>
+                        </div>
+                    )}
 
                     {/* Model Accuracy & Next Forecast Info */}
                     {/* <div className="flex gap-4 mb-4 text-sm">
@@ -437,8 +562,37 @@ const Dashboard = () => {
                             </div>
                             <h3 className="font-bold text-xl text-gray-800">Recent Activity</h3>
                         </div>
-                        <div className="bg-gradient-to-r from-orange-100 to-orange-200 text-orange-700 px-2 py-1 rounded-full text-xs font-semibold shadow-sm">
-                            Live
+
+                        {/* Filter Tabs: Relevant vs Archived */}
+                        <div className="flex gap-2 bg-gray-100 p-1 rounded-lg shadow-sm">
+                            <button
+                                onClick={() => {
+                                    setNotificationFilter('relevant');
+                                    const relevantNotifs = (allNotifications || []).filter(n => !n.status || n.status === 'unhandled');
+                                    setNotifications(dedupeNotifications(relevantNotifs).slice(0, 5));
+                                }}
+                                className={`px-3 py-1 rounded-md font-semibold text-sm transition-all duration-200 ${
+                                    notificationFilter === 'relevant'
+                                        ? 'bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-md scale-105'
+                                        : 'bg-white text-gray-700 hover:bg-gray-50'
+                                }`}
+                            >
+                                Relevant
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setNotificationFilter('archived');
+                                    const archivedNotifs = (allNotifications || []).filter(n => n.status === 'handled' || n.status === 'archived');
+                                    setNotifications(dedupeNotifications(archivedNotifs).slice(0, 5));
+                                }}
+                                className={`px-3 py-1 rounded-md font-semibold text-sm transition-all duration-200 ${
+                                    notificationFilter === 'archived'
+                                        ? 'bg-gradient-to-r from-gray-500 to-gray-600 text-white shadow-md scale-105'
+                                        : 'bg-white text-gray-700 hover:bg-gray-50'
+                                }`}
+                            >
+                                History
+                            </button>
                         </div>
                     </div>
 
@@ -453,19 +607,58 @@ const Dashboard = () => {
                             </div>
                         ) : (
                             notifications.map(note => (
-                                <div key={note.id} className={`text-sm p-4 rounded-xl border transition-all duration-300 hover:shadow-md hover:scale-105 ${
+                                <div key={note.id} className={`text-sm p-4 rounded-xl border transition-all duration-300 ${
                                     note.type === 'warning' 
                                         ? 'bg-gradient-to-r from-yellow-50 to-orange-50 border-yellow-200 text-yellow-800 hover:from-yellow-100 hover:to-orange-100' 
                                         : 'bg-gradient-to-r from-blue-50 to-indigo-50 border-blue-200 text-blue-800 hover:from-blue-100 hover:to-indigo-100'
                                 }`}>
-                                    <div className="flex items-center gap-2 mb-2">
-                                        <div className={`w-2 h-2 rounded-full ${
+                                    <div className="flex items-start gap-2 mb-2">
+                                        <div className={`w-2 h-2 rounded-full flex-shrink-0 mt-1 ${
                                             note.type === 'warning' ? 'bg-yellow-500' : 'bg-blue-500'
                                         } animate-pulse shadow-lg`}></div>
-                                        <div className="font-semibold">{note.type === 'warning' ? 'Warning' : 'Info'}</div>
+                                        <div className="font-semibold flex-1">{note.type === 'warning' ? 'Warning' : 'Info'}</div>
                                     </div>
-                                    <div className="text-gray-700 leading-relaxed">{note.message}</div>
-                                    <div className="text-xs text-right mt-2 opacity-60 font-medium">{new Date(note.timestamp).toLocaleTimeString()}</div>
+                                    <div className="text-gray-700 leading-relaxed mb-3">{note.message}</div>
+                                    
+                                    {/* Show handled info if this is an archived notification */}
+                                    {notificationFilter === 'archived' && note.handled_by && (
+                                        <div className="text-xs bg-black/10 p-2 rounded mb-2 mb-3">
+                                            <p className="opacity-80">
+                                                <strong>Handled by:</strong> {userProfiles[note.handled_by] || 'Unknown User'}
+                                            </p>
+                                            {note.handled_at && (
+                                                <p className="opacity-70">
+                                                    {new Date(note.handled_at).toLocaleString()}
+                                                </p>
+                                            )}
+                                        </div>
+                                    )}
+                                    
+                                    {/* Action Buttons */}
+                                    <div className="flex items-center gap-2 justify-between">
+                                        <div className="text-xs opacity-60 font-medium">{new Date(note.timestamp).toLocaleTimeString()}</div>
+                                        <div className="flex gap-2">
+                                            {notificationFilter === 'relevant' ? (
+                                                // Relevant tab: Show "Handle" button
+                                                <button
+                                                    onClick={() => handleNotificationAction(note.id, 'handled')}
+                                                    className="text-xs px-2 py-1 rounded bg-green-100 text-green-700 hover:bg-green-200 transition-all"
+                                                    title="Mark as handled"
+                                                >
+                                                    ✓ Handle
+                                                </button>
+                                            ) : (
+                                                // Archived tab: Show "Unhandled" button to restore
+                                                <button
+                                                    onClick={() => handleNotificationAction(note.id, 'unhandled')}
+                                                    className="text-xs px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 transition-all"
+                                                    title="Restore to relevant"
+                                                >
+                                                    ↺ Unhandled
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
                                 </div>
                             ))
                         )}

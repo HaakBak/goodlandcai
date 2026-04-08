@@ -4,6 +4,8 @@
 .env.*.local
 scripts/
 Document/
+design/
+logs/
 
 # Dependencies
 node_modules/

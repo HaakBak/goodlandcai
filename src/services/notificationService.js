@@ -245,3 +245,101 @@ export const checkAllExpirations = (inventoryItems) => {
 
   return notifications;
 };
+
+/**
+ * AUTOMATIC NOTIFICATION RESOLUTION
+ * Checks all unhandled notifications against current inventory state
+ * Marks notifications as 'handled' if the underlying issue has been resolved
+ * 
+ * Resolution Rules:
+ * - CRITICAL (out of stock): Resolved if stock > 0
+ * - MINIMAL (low stock): Resolved if stock > threshold
+ * - EXPIRATION: Resolved if item is no longer expired
+ * 
+ * @param {Array} notificationsData - Array of unhandled notifications
+ * @param {Array} inventoryData - Current inventory state
+ * @param {Function} updateNotifFn - Function to update notification (updateNotification from databaseService)
+ * @returns {Promise<Array>} - Array of notification IDs that were auto-resolved
+ */
+export const autoResolveNotifications = async (notificationsData, inventoryData, updateNotifFn) => {
+  if (!Array.isArray(notificationsData) || !Array.isArray(inventoryData)) {
+    console.warn('[Notification] autoResolveNotifications received invalid input');
+    return [];
+  }
+
+  const resolvedIds = [];
+
+  // Build inventory map for quick lookup
+  const inventoryMap = {};
+  inventoryData.forEach(inv => {
+    if (inv.name) {
+      inventoryMap[inv.name.toLowerCase()] = inv;
+    }
+  });
+
+  // Check each unhandled notification
+  for (const notification of notificationsData) {
+    // Skip if already handled/archived
+    if (notification.status === 'handled' || notification.status === 'archived') {
+      continue;
+    }
+
+    const itemName = notification.itemName?.toLowerCase();
+    if (!itemName) continue;
+
+    const currentItem = inventoryMap[itemName];
+    if (!currentItem) continue;
+
+    let shouldResolve = false;
+    let resolveReason = '';
+
+    // Rule 1: CRITICAL alert (out of stock) - Resolved if stock now > 0
+    if (notification.category === 'CRITICAL') {
+      const currentStock = currentItem.inStock || currentItem.in_stock || 0;
+      if (currentStock > 0) {
+        shouldResolve = true;
+        resolveReason = `Stock recovered: ${currentStock} units available`;
+      }
+    }
+
+    // Rule 2: MINIMAL alert (low stock) - Resolved if stock now > threshold
+    if (notification.category === 'MINIMAL') {
+      const currentStock = currentItem.inStock || currentItem.in_stock || 0;
+      const threshold = currentItem.lowStockThreshold || currentItem.reorder_level || 10;
+      if (currentStock > threshold) {
+        shouldResolve = true;
+        resolveReason = `Stock above threshold: ${currentStock} > ${threshold}`;
+      }
+    }
+
+    // Rule 3: EXPIRATION alert - Resolved if item no longer expired
+    if (notification.category === 'EXPIRATION') {
+      if (!isItemExpired(currentItem)) {
+        shouldResolve = true;
+        resolveReason = `Expiration resolved: Item is no longer expired`;
+      }
+    }
+
+    // If issue is resolved, mark notification as handled
+    if (shouldResolve && updateNotifFn) {
+      try {
+        const result = await updateNotifFn(notification.id, { status: 'handled' });
+        if (result.success) {
+          resolvedIds.push(notification.id);
+          console.log(`✅ [AutoResolve] ${notification.category} notification auto-resolved for "${itemName}"`, {
+            reason: resolveReason,
+            notificationId: notification.id,
+          });
+        }
+      } catch (error) {
+        console.error(`❌ [AutoResolve] Failed to auto-resolve notification for "${itemName}":`, error);
+      }
+    }
+  }
+
+  if (resolvedIds.length > 0) {
+    console.log(`📋 [AutoResolve Summary] Auto-resolved ${resolvedIds.length} notifications`);
+  }
+
+  return resolvedIds;
+};

@@ -1373,6 +1373,52 @@ export const addNotification = async (note) => {
   }
 };
 
+export const updateNotification = async (notificationId, updates) => {
+  const supabase = initSupabaseClient();
+
+  // updates object should contain fields like: { status: 'handled' } or { status: 'archived' }
+  if (!notificationId || !updates) {
+    console.warn('[DB] ⚠️  updateNotification() missing ID or updates');
+    return { success: false, error: 'Invalid parameters' };
+  }
+
+  // If updating status to 'handled' or 'archived', add audit trail info
+  const enhancedUpdates = { ...updates };
+  if ((updates.status === 'handled' || updates.status === 'archived') && !updates.handled_by) {
+    const currentUserId = sessionStorage.getItem('userId');
+    if (currentUserId) {
+      enhancedUpdates.handled_by = currentUserId;
+      enhancedUpdates.handled_at = new Date().toISOString();
+    }
+  }
+
+  if (!supabase || !isOnline) {
+    console.log('[DB] 📥 updateNotification() — queued for offline sync');
+    queueMutation({ type: 'UPDATE', table: 'notifications', id: notificationId, data: enhancedUpdates });
+    return { success: true, message: 'Queued for sync' };
+  }
+
+  try {
+    const result = await retryWithBackoff(async () => {
+      const { data, error } = await supabase
+        .from('notifications')
+        .update(enhancedUpdates)
+        .eq('id', notificationId)
+        .select();
+      
+      if (error) throw error;
+      console.log('[DB] ✅ updateNotification() to Supabase - ID:', notificationId, 'Updates:', enhancedUpdates);
+      return { success: true, data };
+    });
+    
+    return result;
+  } catch (error) {
+    console.error('[DB] ❌ updateNotification() failed:', error);
+    queueMutation({ type: 'UPDATE', table: 'notifications', id: notificationId, data: enhancedUpdates });
+    return { success: false, error: error.message };
+  }
+};
+
 // ─── USAGE LOGS ───────────────────────────────────────────────────────────
 
 // Helper: Normalize usage log for display - flexible for different action types
