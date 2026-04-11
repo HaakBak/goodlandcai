@@ -8,7 +8,9 @@ import {
   saveRecipe,
   addInventoryItem,
   updateInventoryItem,
+  deleteInventoryItem,
   getUsageLogs,
+  getTransactions,
   addHistoryLog,
   addUsageLog,
 } from '../../services/mockDatabase';
@@ -30,6 +32,7 @@ const InventoryPage = () => {
   const [menu, setMenu] = useState([]);
   const [recipes, setRecipes] = useState({});
   const [usageLogs, setUsageLogs] = useState([]);
+  const [transactions, setTransactions] = useState([]);
   const [menuRecipeWarnings, setMenuRecipeWarnings] = useState([]);
   const [hasLoggedMissingRecipeWarning, setHasLoggedMissingRecipeWarning] = useState(false);
 
@@ -47,6 +50,23 @@ const InventoryPage = () => {
   const [showSupplierItemsModal, setShowSupplierItemsModal] = useState(false);
   const [selectedItemForSupplier, setSelectedItemForSupplier] = useState(null);
   const [notificationMessage, setNotificationMessage] = useState('');
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // DELETE INVENTORY ITEM - Modal state for confirmation + warnings
+  // ═══════════════════════════════════════════════════════════════════════════
+  const [showDeleteConfirmModal, setShowDeleteConfirmModal] = useState(false);
+  const [itemToDelete, setItemToDelete] = useState(null);
+  const [usageWarnings, setUsageWarnings] = useState({
+    recipesCount: 0,
+    lastTransactionDate: null,
+  });
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // DELETE SUPPLIER - Modal state for confirmation
+  // ═══════════════════════════════════════════════════════════════════════════
+  const [showDeleteSupplierModal, setShowDeleteSupplierModal] = useState(false);
+  const [supplierToDelete, setSupplierToDelete] = useState(null);
 
   const [addItemData, setAddItemData] = useState({
     name: '',
@@ -127,6 +147,7 @@ const InventoryPage = () => {
         fetchWithRetry(() => getMenu()),
         fetchWithRetry(() => getRecipes()),
         fetchWithRetry(() => getUsageLogs()),
+        fetchWithRetry(() => getTransactions()),
       ]);
 
       // PHASE 2.3 FIX: Process results with fallback values
@@ -135,6 +156,7 @@ const InventoryPage = () => {
       const menuData = results[2].status === 'fulfilled' ? results[2].value : [];
       const recipeData = results[3].status === 'fulfilled' ? results[3].value : {};
       const logData = results[4].status === 'fulfilled' ? results[4].value : [];
+      const txnData = results[5].status === 'fulfilled' ? results[5].value : [];
 
       // PHASE 2.3 FIX: Log any failures for debugging
       const failures = [
@@ -143,6 +165,7 @@ const InventoryPage = () => {
         { name: 'Menu', status: results[2].status, error: results[2].reason },
         { name: 'Recipes', status: results[3].status, error: results[3].reason },
         { name: 'Usage Logs', status: results[4].status, error: results[4].reason },
+        { name: 'Transactions', status: results[5].status, error: results[5].reason },
       ].filter(r => r.status === 'rejected');
 
       if (failures.length > 0) {
@@ -166,6 +189,7 @@ const InventoryPage = () => {
       setSuppliers(supData);
       setMenu(menuData);
       setRecipes(recipeData);
+      setTransactions(txnData);
       setUsageLogs(logData);
 
       const missingRecipeItems = menuData.filter((menuItem) => {
@@ -268,8 +292,10 @@ const InventoryPage = () => {
     }
 
     let updated;
+    let isEdit = false;
     if (currentSupplier) {
       // Edit existing supplier
+      isEdit = true;
       updated = suppliers.map(sup =>
         sup.id === currentSupplier.id
           ? { ...sup, name: supplierName, email: supplierEmail, phone: supplierPhone, address: supplierAddress }
@@ -285,18 +311,71 @@ const InventoryPage = () => {
     setSuppliers(updated);
     setShowSupplierModal(false);
     setCurrentSupplier(null);
+    
+    // Show toast notification
+    const toastMessage = isEdit
+      ? `${supplierName} has been edited and saved.`
+      : `${supplierName} has been created.`;
+    
+    const event = new CustomEvent('SHOW_TOAST', {
+      detail: {
+        id: crypto.randomUUID(),
+        message: toastMessage,
+        type: 'success',
+        category: isEdit ? 'SUPPLIER_EDIT' : 'SUPPLIER_CREATE',
+        timestamp: new Date(),
+        duration: 5000, // 5 seconds for success
+      }
+    });
+    window.dispatchEvent(event);
+    
     setSupplierName('');
     setSupplierEmail('');
     setSupplierPhone('');
     setSupplierAddress('');
   };
 
-  const handleDeleteSupplier = async (supplierId) => {
-    if (window.confirm('Are you sure you want to delete this supplier? Items assigned to this supplier will not be deleted.')) {
-      const updated = suppliers.filter(sup => sup.id !== supplierId);
+  const handleDeleteSupplier = (supplierToDeleteData) => {
+    setSupplierToDelete(supplierToDeleteData);
+    setShowDeleteSupplierModal(true);
+  };
+
+  const handleConfirmDeleteSupplier = async () => {
+    if (!supplierToDelete) return;
+    
+    try {
+      const updated = suppliers.filter(sup => sup.id !== supplierToDelete.id);
       await saveSuppliers(updated);
       setSuppliers(updated);
       setCurrentSupplier(null);
+      setShowDeleteSupplierModal(false);
+      setSupplierToDelete(null);
+      
+      // Show success toast
+      const event = new CustomEvent('SHOW_TOAST', {
+        detail: {
+          id: crypto.randomUUID(),
+          message: `${supplierToDelete.name} has been deleted.`,
+          type: 'success',
+          category: 'SUPPLIER_DELETE',
+          timestamp: new Date(),
+          duration: 5000, // 5 seconds for success
+        }
+      });
+      window.dispatchEvent(event);
+    } catch (error) {
+      console.error('[Inventory] Delete supplier error:', error);
+      const errorEvent = new CustomEvent('SHOW_TOAST', {
+        detail: {
+          id: crypto.randomUUID(),
+          message: `Failed to delete ${supplierToDelete.name}. Please try again.`,
+          type: 'error',
+          category: 'SUPPLIER_DELETE_ERROR',
+          timestamp: new Date(),
+          duration: 10000, // 10 seconds for error
+        }
+      });
+      window.dispatchEvent(errorEvent);
     }
   };
 
@@ -330,6 +409,21 @@ const InventoryPage = () => {
     await saveSuppliers(updatedSuppliers);
     setSuppliers(updatedSuppliers);
     setCurrentSupplier(updatedSuppliers.find(s => s.id === currentSupplier.id));
+    
+    // Show success toast
+    const itemName = inventory.find(i => i.id === selectedItemForSupplier)?.name || 'Item';
+    const event = new CustomEvent('SHOW_TOAST', {
+      detail: {
+        id: crypto.randomUUID(),
+        message: `${itemName} is part of ${currentSupplier.name}.`,
+        type: 'success',
+        category: 'SUPPLIER_ITEM_ADD',
+        timestamp: new Date(),
+        duration: 5000, // 5 seconds for success
+      }
+    });
+    window.dispatchEvent(event);
+    
     setSelectedItemForSupplier(null);
   };
 
@@ -657,6 +751,155 @@ const InventoryPage = () => {
       lowStockThreshold: '',
       expirationDate: '',
     });
+  };
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // DELETE INVENTORY ITEM - Handler with warning dialog and audit tracking
+  // ═══════════════════════════════════════════════════════════════════════════
+  const handleDeleteClick = async (item) => {
+    if (!item) return;
+
+    // Check if item is used in any recipes
+    let recipesCount = 0;
+    Object.keys(recipes).forEach(dishId => {
+      const recipe = recipes[dishId];
+      if (recipe?.ingredients?.some(ing => ing.inventoryId === item.id)) {
+        recipesCount++;
+      }
+    });
+
+    // Check for recent transactions (last 30 days) using this item
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    let lastTransactionDate = null;
+    if (transactions.length > 0) {
+      for (const tx of transactions) {
+        const txDate = new Date(tx.timestamp || tx.created_at);
+        if (txDate < thirtyDaysAgo) break; // No need to check older transactions
+        
+        // Check if item name appears in transaction items
+        const txItems = tx.items || [];
+        if (typeof txItems === 'string') {
+          if (txItems.includes(item.name)) {
+            lastTransactionDate = txDate;
+            break;
+          }
+        } else if (Array.isArray(txItems)) {
+          if (txItems.some(ti => ti.name === item.name || ti.itemName === item.name)) {
+            lastTransactionDate = txDate;
+            break;
+          }
+        }
+      }
+    }
+
+    // Set modal state with warnings
+    setItemToDelete(item);
+    setUsageWarnings({
+      recipesCount,
+      lastTransactionDate,
+    });
+    setShowDeleteConfirmModal(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!itemToDelete) return;
+    
+    setIsDeleting(true);
+    try {
+      const currentUser = getCurrentUserInfo();
+      
+      // Step 1: Delete from database
+      const { success, error } = await deleteInventoryItem(itemToDelete.id, itemToDelete.name);
+      
+      if (!success) {
+        throw new Error(error || 'Failed to delete item');
+      }
+
+      // Step 2: Log to history (audit trail)
+      await addHistoryLog({
+        type: 'Inventory Change',
+        description: `${itemToDelete.name} has been deleted`,
+        user_id: sessionStorage.getItem('userId'),
+        user: currentUser.username,
+        role: currentUser.userRole,
+        log_category: 'BUSINESS_OPERATION',
+        details: {
+          action: 'DELETE',
+          item_id: itemToDelete.id,
+          item_name: itemToDelete.name,
+          item_type: itemToDelete.type,
+        }
+      });
+
+      // Step 3: Show toast notification (10 seconds duration)
+      // ═══════════════════════════════════════════════════════════════════════
+      // 🎯 CUSTOMIZABLE TOAST MESSAGE - Edit the message text below:
+      // Change this based on how the action affects different user roles
+      // 
+      // Examples:
+      // - For Managers: "Your item '[name]' has been successfully deleted"
+      // - For Employees: "Item '[name]' is no longer available for orders"
+      // - For Both: "You've successfully removed '[name]' from inventory"
+      // ═══════════════════════════════════════════════════════════════════════
+      const toastMessage = `Your item '${itemToDelete.name}' has been successfully deleted`;
+      
+      // Dispatch custom event with 10-second duration
+      const event = new CustomEvent('SHOW_TOAST', {
+        detail: {
+          id: crypto.randomUUID(),
+          message: toastMessage,
+          type: 'success',
+          category: 'INVENTORY_DELETE',
+          itemName: itemToDelete.name,
+          timestamp: new Date(),
+          duration: 10000, // 10 seconds as requested
+        }
+      });
+      window.dispatchEvent(event);
+
+      // Step 4: Refresh data and close modal
+      await refreshData();
+      setShowDeleteConfirmModal(false);
+      setItemToDelete(null);
+      setEditingItem(null);
+      setEditFormData({
+        name: '',
+        stock: '',
+        cost: '',
+        type: '',
+        measurementUnit: '',
+        measurementQty: '',
+        openStock: '',
+        lowStockThreshold: '',
+        expirationDate: '',
+      });
+
+      console.log('✅ [Inventory Deleted]', {
+        itemName: itemToDelete.name,
+        itemId: itemToDelete.id,
+        deletedBy: currentUser.username,
+      });
+    } catch (err) {
+      console.error('[Inventory Delete Error]', err);
+      
+      // Show error notification (also 10 seconds)
+      const errorEvent = new CustomEvent('SHOW_TOAST', {
+        detail: {
+          id: crypto.randomUUID(),
+          message: `Your request could not be processed. ${err.message}`,
+          type: 'error',
+          category: 'INVENTORY_DELETE_ERROR',
+          itemName: itemToDelete?.name,
+          timestamp: new Date(),
+          duration: 10000,
+        }
+      });
+      window.dispatchEvent(errorEvent);
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   const handleOpenAutoModal = (dish) => {
@@ -1094,7 +1337,7 @@ const InventoryPage = () => {
                     Edit
                   </button>
                   <button
-                    onClick={() => handleDeleteSupplier(sup.id)}
+                    onClick={() => handleDeleteSupplier(sup)}
                     className="flex-1 bg-red-500 hover:bg-red-600 text-white py-2 px-3 rounded-lg text-sm font-semibold transition-all"
                   >
                     Delete
@@ -1348,12 +1591,20 @@ const InventoryPage = () => {
                       </div>
                     )}
 
-                    <div className="mt-2 flex justify-center">
+                    <div className="mt-2 flex justify-center gap-3">
                       <button
                         onClick={handleSaveEditItem}
-                        className="bg-green-700 text-white text-sm font-semibold py-2 px-10 rounded"
+                        className="bg-green-700 text-white text-sm font-semibold py-2 px-10 rounded hover:bg-green-800 transition-all"
                       >
                         Save
+                      </button>
+                      <button
+                        onClick={() => handleDeleteClick(editingItem)}
+                        className="bg-red-600 text-white text-sm font-semibold py-2 px-10 rounded hover:bg-red-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={!editingItem}
+                        title="Delete this inventory item permanently"
+                      >
+                        Delete
                       </button>
                     </div>
                   </div>
@@ -1733,6 +1984,148 @@ const InventoryPage = () => {
       {notificationMessage && (
         <div className="fixed top-4 right-4 bg-red-500 text-white px-6 py-3 rounded-lg shadow-lg z-[1000] animate-pulse">
           {notificationMessage}
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════════════════════
+          DELETE INVENTORY ITEM - Confirmation Modal (Centered + Blurred Background)
+          ═══════════════════════════════════════════════════════════════════════════ */}
+      {showDeleteConfirmModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-[2000]">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 animate-in fade-in zoom-in duration-300">
+            {/* Modal Header */}
+            <div className="mb-6">
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Delete Inventory Item?</h2>
+              <p className="text-gray-600">This action cannot be undone.</p>
+            </div>
+
+            {/* Item Information */}
+            {itemToDelete && (
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <span className="text-gray-600 font-semibold">Item:</span>
+                    <p className="text-gray-900 font-bold">{itemToDelete.name}</p>
+                  </div>
+                  <div>
+                    <span className="text-gray-600 font-semibold">Type:</span>
+                    <p className="text-gray-900">{itemToDelete.type}</p>
+                  </div>
+                  <div>
+                    <span className="text-gray-600 font-semibold">Current Stock:</span>
+                    <p className="text-gray-900">{itemToDelete.inStock} {itemToDelete.measurementUnit}</p>
+                  </div>
+                  <div>
+                    <span className="text-gray-600 font-semibold">Unit Cost:</span>
+                    <p className="text-gray-900">₱{itemToDelete.cost?.toFixed(2) || '0.00'}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Usage Warnings */}
+            {(usageWarnings.recipesCount > 0 || usageWarnings.lastTransactionDate) && (
+              <div className="bg-amber-50 border-l-4 border-amber-500 p-4 mb-6">
+                <h3 className="font-bold text-amber-900 mb-2 flex items-center gap-2">
+                  <span className="text-xl">⚠️</span> Usage Warnings
+                </h3>
+                <ul className="text-sm text-amber-800 space-y-1">
+                  {usageWarnings.recipesCount > 0 && (
+                    <li>• Used in <strong>{usageWarnings.recipesCount}</strong> recipe{usageWarnings.recipesCount !== 1 ? 's' : ''}</li>
+                  )}
+                  {usageWarnings.lastTransactionDate && (
+                    <li>• Last ordered on <strong>{new Date(usageWarnings.lastTransactionDate).toLocaleDateString()}</strong></li>
+                  )}
+                </ul>
+              </div>
+            )}
+
+            {/* Modal Actions */}
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowDeleteConfirmModal(false)}
+                disabled={isDeleting}
+                className="flex-1 px-4 py-3 bg-gray-200 text-gray-800 font-semibold rounded-lg hover:bg-gray-300 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                disabled={isDeleting}
+                className="flex-1 px-4 py-3 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {isDeleting ? (
+                  <>
+                    <span className="animate-spin">⏳</span> Deleting...
+                  </>
+                ) : (
+                  <>
+                    <span>🗑️</span> Delete Item
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════════════════════
+          DELETE SUPPLIER - Confirmation Modal (Centered + Blurred Background)
+          ═══════════════════════════════════════════════════════════════════════════ */}
+      {showDeleteSupplierModal && supplierToDelete && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-[2000]">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 animate-in fade-in zoom-in duration-300">
+            {/* Modal Header */}
+            <div className="mb-6">
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Delete Supplier?</h2>
+              <p className="text-gray-600">This action cannot be undone.</p>
+            </div>
+
+            {/* Supplier Information */}
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">
+              <div className="grid grid-cols-1 gap-3 text-sm">
+                <div>
+                  <span className="text-gray-600 font-semibold">Supplier:</span>
+                  <p className="text-gray-900 font-bold">{supplierToDelete.name}</p>
+                </div>
+                <div>
+                  <span className="text-gray-600 font-semibold">Email:</span>
+                  <p className="text-gray-900">{supplierToDelete.email}</p>
+                </div>
+                <div>
+                  <span className="text-gray-600 font-semibold">Phone:</span>
+                  <p className="text-gray-900">{supplierToDelete.phone}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Info Alert */}
+            <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-6">
+              <h3 className="font-bold text-blue-900 mb-2 flex items-center gap-2">
+                <span className="text-lg">ℹ️</span> Note
+              </h3>
+              <p className="text-sm text-blue-800">Items assigned to this supplier will not be deleted.</p>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setShowDeleteSupplierModal(false);
+                  setSupplierToDelete(null);
+                }}
+                className="flex-1 px-4 py-3 bg-gray-200 text-gray-800 font-semibold rounded-lg hover:bg-gray-300 transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmDeleteSupplier}
+                className="flex-1 px-4 py-3 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition-all flex items-center justify-center gap-2"
+              >
+                <span>🗑️</span> Delete Supplier
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -969,6 +969,39 @@ export const updateInventoryItem = async (itemId, updates) => {
   });
 };
 
+// ═══════════════════════════════════════════════════════════════════════════
+// DELETE INVENTORY ITEM - Manager-only operation with audit trail
+// ═══════════════════════════════════════════════════════════════════════════
+export const deleteInventoryItem = async (itemId, itemName) => {
+  const supabase = initSupabaseClient();
+
+  if (!itemId || !itemName) {
+    console.warn('[DB] ⚠️  deleteInventoryItem() missing ID or name');
+    return { success: false, error: 'Invalid parameters' };
+  }
+
+  if (!supabase || !isOnline) {
+    console.log('[DB] 📥 deleteInventoryItem() — queued for offline sync');
+    queueMutation({ type: 'DELETE', table: 'inventory', id: itemId });
+    return { success: true, message: 'Queued for sync' };
+  }
+
+  try {
+    const result = await retryWithBackoff(async () => {
+      const { error } = await supabase.from('inventory').delete().eq('id', itemId);
+      if (error) throw error;
+      console.log('[DB] ✅ deleteInventoryItem() from Supabase - Item:', itemName);
+      return { success: true, data: { id: itemId, name: itemName } };
+    });
+
+    return result;
+  } catch (error) {
+    console.error('[DB] ❌ deleteInventoryItem() failed:', error);
+    queueMutation({ type: 'DELETE', table: 'inventory', id: itemId });
+    return { success: false, error: error.message };
+  }
+};
+
 // ─── TRANSACTIONS ────────────────────────────────────────────────────────
 
 export const getTransactions = async () => {

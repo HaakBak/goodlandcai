@@ -26,10 +26,19 @@ const NotificationToast = () => {
       console.log('🔔 [Toast Received]', notificationData);
       setToast(notificationData);
       
-      // Auto hide after different durations based on severity:
+      // Auto hide after duration:
+      // - Custom duration if provided (e.g., 10000ms for delete confirmations)
       // - CRITICAL alerts: 6 seconds (more important, needs attention)
       // - MINIMAL/INFO: 4 seconds (standard)
-      const duration = notificationData.category === 'CRITICAL' ? 6000 : 4000;
+      let duration = 4000;
+      
+      if (notificationData.duration) {
+        duration = notificationData.duration; // Use custom duration if provided
+      } else if (notificationData.category === 'CRITICAL') {
+        duration = 6000;
+      } else if (notificationData.category === 'MINIMAL') {
+        duration = 4000;
+      }
       
       const timer = setTimeout(() => {
         setToast(null);
@@ -51,27 +60,45 @@ const NotificationToast = () => {
   // Determine styling based on notification type/category
   const isCritical = toast.type === 'warning' || toast.category === 'CRITICAL';
   const isMinimal = toast.category === 'MINIMAL';
+  const isSuccess = toast.type === 'success' || toast.category === 'INVENTORY_DELETE';
+  const isError = toast.type === 'error' || toast.category === 'INVENTORY_DELETE_ERROR';
 
   // Color scheme for different notification types
-  const bgColor = isCritical
+  const bgColor = isSuccess
+    ? 'bg-green-100' // Success: Green background
+    : isError
+    ? 'bg-red-100' // Error: Red background
+    : isCritical
     ? 'bg-red-100' // Critical alerts: Red background
     : isMinimal
     ? 'bg-amber-100' // Minimal alerts: Amber/Orange background
     : 'bg-blue-100'; // Info: Blue background
 
-  const textColor = isCritical
+  const textColor = isSuccess
+    ? 'text-green-900'
+    : isError
+    ? 'text-red-900'
+    : isCritical
     ? 'text-red-900'
     : isMinimal
     ? 'text-amber-900'
     : 'text-blue-900';
 
-  const iconBgColor = isCritical
+  const iconBgColor = isSuccess
+    ? 'bg-green-600'
+    : isError
+    ? 'bg-red-600'
+    : isCritical
     ? 'bg-red-600'
     : isMinimal
     ? 'bg-amber-600'
     : 'bg-blue-600';
 
-  const borderColor = isCritical
+  const borderColor = isSuccess
+    ? 'border-green-400'
+    : isError
+    ? 'border-red-400'
+    : isCritical
     ? 'border-red-400'
     : isMinimal
     ? 'border-amber-400'
@@ -82,23 +109,27 @@ const NotificationToast = () => {
   const dateDisplay = toast.date || new Date(toast.timestamp).toISOString().split('T')[0];
 
   return (
-    <div className={`fixed bottom-6 right-6 z-50 ${isCritical ? 'animate-pulse' : 'animate-bounce'}`}>
+    <div className={`fixed bottom-6 right-6 z-50 ${(isCritical && !isSuccess) ? 'animate-pulse' : 'animate-bounce'}`}>
       <div className={`p-4 rounded-xl shadow-2xl flex items-start gap-3 min-w-[320px] border-2 ${
         borderColor
       } ${bgColor} ${textColor}`}>
         
-        {/* Icon Container - Different icon for critical vs minimal */}
+        {/* Icon Container - Different icon for different notification types */}
         <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-white flex-shrink-0 ${
           iconBgColor
         }`}>
-          {isCritical ? '⚠️' : isMinimal ? '📉' : 'ℹ️'}
+          {isSuccess ? '✅' : isError ? '❌' : isCritical ? '⚠️' : isMinimal ? '📉' : 'ℹ️'}
         </div>
 
         {/* Content Container */}
         <div className="flex-1">
           {/* Category Badge */}
           <h4 className="font-bold text-sm mb-1">
-            {isCritical
+            {isSuccess
+              ? '✓ SUCCESS'
+              : isError
+              ? '✕ ERROR'
+              : isCritical
               ? '🚨 CRITICAL WARNING'
               : isMinimal
               ? '⚡ MINIMAL ALERT'

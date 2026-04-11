@@ -294,18 +294,52 @@ const POS = () => {
         setPaymentInput('');
         setDiscountType('None');
         
-        // setTimeout to ensure the alert doesn't block the download initiation immediately
+        // setTimeout to ensure the toast doesn't block the download initiation immediately
         setTimeout(() => {
             if (pdfError) {
-                alert('Order Placed Successfully!\n\nNote: Receipt PDF generation failed. Please check console for details.');
+                // Show error toast
+                const errorEvent = new CustomEvent('SHOW_TOAST', {
+                  detail: {
+                    id: crypto.randomUUID(),
+                    message: 'Order placed successfully! Receipt PDF generation failed. Please check console for details.',
+                    type: 'warning',
+                    category: 'ORDER_PDF_ERROR',
+                    timestamp: new Date(),
+                    duration: 10000, // 10 seconds for error
+                  }
+                });
+                window.dispatchEvent(errorEvent);
             } else {
-                alert('Order Placed Successfully! Receipt downloading...');
+                // Show success toast
+                const successEvent = new CustomEvent('SHOW_TOAST', {
+                  detail: {
+                    id: crypto.randomUUID(),
+                    message: 'Order placed successfully! Receipt downloading...',
+                    type: 'success',
+                    category: 'ORDER_SUCCESS',
+                    timestamp: new Date(),
+                    duration: 5000, // 5 seconds for success
+                  }
+                });
+                window.dispatchEvent(successEvent);
             }
         }, 500);
 
     } catch (error) {
         console.error("Error placing order", error);
-        alert("Failed to place order. Please try again.");
+        
+        // Show error toast
+        const errorEvent = new CustomEvent('SHOW_TOAST', {
+          detail: {
+            id: crypto.randomUUID(),
+            message: 'Failed to place order. Please try again.',
+            type: 'error',
+            category: 'ORDER_FAILED',
+            timestamp: new Date(),
+            duration: 10000, // 10 seconds for error
+          }
+        });
+        window.dispatchEvent(errorEvent);
     }
   };
 

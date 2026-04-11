@@ -121,12 +121,45 @@ const POSM = () => {
     try {
       await saveMenu(updatedMenu);
       setMenu(updatedMenu);
+      
+      // Determine if edit or add
+      const isEdit = currentItem.id !== undefined;
+      const toastMessage = isEdit
+        ? `${itemToSave.name} has been edited and saved.`
+        : `${itemToSave.name} has been created in ${itemToSave.category}.`;
+      
+      // Show success toast
+      const event = new CustomEvent('SHOW_TOAST', {
+        detail: {
+          id: crypto.randomUUID(),
+          message: toastMessage,
+          type: 'success',
+          category: isEdit ? 'MENU_EDIT' : 'MENU_CREATE',
+          timestamp: new Date(),
+          duration: 5000, // 5 seconds for success
+        }
+      });
+      window.dispatchEvent(event);
+      
       setShowAddModal(false);
       setShowEditModal(false);
       setCurrentItem({});
       setPriceError('');
     } catch (error) {
-      alert('Failed to save menu item.');
+      console.error('Failed to save menu item:', error);
+      
+      // Show error toast
+      const errorEvent = new CustomEvent('SHOW_TOAST', {
+        detail: {
+          id: crypto.randomUUID(),
+          message: 'Failed to save menu item. Please try again.',
+          type: 'error',
+          category: 'MENU_SAVE_ERROR',
+          timestamp: new Date(),
+          duration: 10000, // 10 seconds for error
+        }
+      });
+      window.dispatchEvent(errorEvent);
     }
   };
 
@@ -170,10 +203,43 @@ const POSM = () => {
 
   const handleDelete = async () => {
     if (!currentItem.id) return;
-    const updatedMenu = menu.filter(m => m.id !== currentItem.id);
-    await saveMenu(updatedMenu);
-    setMenu(updatedMenu);
-    setShowDeleteModal(false);
+    
+    try {
+      const deletedItemName = currentItem.name;
+      const updatedMenu = menu.filter(m => m.id !== currentItem.id);
+      await saveMenu(updatedMenu);
+      setMenu(updatedMenu);
+      setShowDeleteModal(false);
+      setCurrentItem({});
+      
+      // Show success toast
+      const event = new CustomEvent('SHOW_TOAST', {
+        detail: {
+          id: crypto.randomUUID(),
+          message: `${deletedItemName} has been deleted.`,
+          type: 'success',
+          category: 'MENU_DELETE',
+          timestamp: new Date(),
+          duration: 5000, // 5 seconds for success
+        }
+      });
+      window.dispatchEvent(event);
+    } catch (error) {
+      console.error('Failed to delete menu item:', error);
+      
+      // Show error toast
+      const errorEvent = new CustomEvent('SHOW_TOAST', {
+        detail: {
+          id: crypto.randomUUID(),
+          message: 'Failed to delete menu item. Please try again.',
+          type: 'error',
+          category: 'MENU_DELETE_ERROR',
+          timestamp: new Date(),
+          duration: 10000, // 10 seconds for error
+        }
+      });
+      window.dispatchEvent(errorEvent);
+    }
   };
 
   const handleSaveServiceFees = async () => {
