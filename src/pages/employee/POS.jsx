@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { getMenu, saveTransaction, getTransactions, resetMenu, getBusinessInfo, getServiceFees, addHistoryLog, getInventory, getRecipes, updateInventoryItem, addUsageLog } from '../../services/mockDatabase';
+import { evaluateInventoryAlert } from '../../services/notificationService';
 import { generateReceiptPDF } from '../../services/receiptServices';
 import { useNavigate } from 'react-router-dom';
 
@@ -95,7 +96,9 @@ const deductInventoryFromCart = async (cart) => {
     }
 
     const currentStock = parseNumericValue(inventoryItem.stock ?? inventoryItem.stock_level ?? inventoryItem.quantity ?? inventoryItem.inStock);
+    const oldOpenStock = parseNumericValue(inventoryItem.openStock ?? inventoryItem.used_amount ?? 0);
     const newStock = Math.max(0, currentStock - quantityUsed);
+    const newOpenStock = oldOpenStock + quantityUsed; // Track cumulative consumption
     
     // Log the deduction for audit trail
     addUsageLog({
@@ -108,18 +111,88 @@ const deductInventoryFromCart = async (cart) => {
         measurement_unit: inventoryItem.measurementUnit || inventoryItem.unit,
         old_stock: currentStock,
         new_stock: newStock,
+        cumulative_consumed: newOpenStock,
         timestamp: new Date().toISOString()
       }
     }).catch(err => {
       console.warn('[POS] Could not log deduction:', err);
     });
 
-    console.log(`[POS] ✅ Deducting ${quantityUsed} from ${inventoryItem.name} (${currentStock} → ${newStock})`);
-    return updateInventoryItem(inventoryId, { in_stock: newStock });
+    console.log(`[POS] ✅ Deducting ${quantityUsed} from ${inventoryItem.name} (${currentStock} → ${newStock}, consumed: ${newOpenStock})`);
+    
+    // ✅ ENHANCED: Track both in_stock (remaining) and openStock (consumed)
+    const updatePromise = updateInventoryItem(inventoryId, { 
+      in_stock: newStock,
+      inStock: newStock,
+      openStock: newOpenStock,  // Track cumulative consumption
+    }).then(async () => {
+      // ✅ NEW: After successful deduction, check if out-of-stock and trigger alert
+      if (newStock === 0) {
+        try {
+          const tempItem = { inStock: newStock, lowStockThreshold: inventoryItem.lowStockThreshold };
+          await evaluateInventoryAlert(tempItem, currentStock, inventoryItem.name);
+        } catch (alertErr) {
+          console.warn('[POS] Could not evaluate inventory alert:', alertErr);
+          // Continue even if alert fails
+        }
+      }
+      return true;
+    }).catch(err => {
+      // ✅ ENHANCED ERROR HANDLING: Distinguish between RLS and other errors
+      if (err.status === 403) {
+        console.error('[POS] ❌ PERMISSION DENIED: Update inventory failed (RLS policy). User role may lack UPDATE permissions.');
+        console.error('[POS] Only managers and admins can modify inventory.');
+      } else {
+        console.error('[POS] ❌ Update inventory failed:', err.message || err);
+      }
+      // Log error to audit trail
+      addUsageLog({
+        user_id: getCurrentUserInfo().userId,
+        action: 'RECIPE_DEDUCTION_FAILED',
+        details: {
+          inventory_item_id: inventoryId,
+          inventory_item_name: inventoryItem.name,
+          quantity_deducted: quantityUsed,
+          error_message: err.message || 'Unknown error',
+          error_status: err.status,
+          timestamp: new Date().toISOString()
+        }
+      }).catch(() => {
+        // Silently fail if usage log itself fails
+      });
+      return false;
+    });
+
+    return updatePromise;
   });
 
-  await Promise.all(updates);
-  console.log('[POS] 📦 Inventory deduction completed');
+  // ✅ NEW: Execute all updates and track results
+  try {
+    const results = await Promise.all(updates);
+    console.log('[POS] 📦 Inventory deduction completed. Summary:', {
+      total: updates.length,
+      successful: results.filter(r => r).length,
+      failed: results.filter(r => !r).length,
+    });
+
+    // ✅ NEW: Dispatch event to trigger real-time inventory refresh in manager views
+    const inventoryUpdatedEvent = new CustomEvent('INVENTORY_DEDUCTED', {
+      detail: {
+        deductedItems: Object.entries(usageMap).map(([id, qty]) => ({
+          id,
+          quantity: qty,
+          timestamp: new Date().toISOString()
+        })),
+        timestamp: new Date().toISOString()
+      }
+    });
+    window.dispatchEvent(inventoryUpdatedEvent);
+    console.log('[POS] 📡 Dispatched INVENTORY_DEDUCTED event for real-time refresh');
+  } catch (error) {
+    console.error('[POS] ❌ CRITICAL: Inventory deduction failed:', error);
+    // Re-throw so caller can handle the error
+    throw error;
+  }
 };
 
 const POS = () => {
@@ -139,6 +212,15 @@ const POS = () => {
     resetMenu();
     getMenu().then(setMenu);
     getServiceFees().then(setServiceFees);
+    
+    // ✅ Re-fetch menu when Employee returns to window (catches Manager-made deletions)
+    const handleWindowFocus = () => {
+      console.log('[POS] 👁️  Window focus regained, refreshing menu...');
+      getMenu().then(setMenu);
+    };
+    
+    window.addEventListener('focus', handleWindowFocus);
+    return () => window.removeEventListener('focus', handleWindowFocus);
   }, []);
 
   const addToCart = (item, size = null) => {

@@ -60,7 +60,7 @@ export const generateReceiptPDF = async (transaction, businessInfo) => {
     doc.setFont('courier', 'normal'); 
 
     const centerX = width / 2;
-    const marginX = 0.3;
+    const marginX = 1.0;
     let currentY = 0.5;
 
     // Helper for centering text
@@ -165,15 +165,28 @@ export const generateReceiptPDF = async (transaction, businessInfo) => {
     doc.text("Total", width - marginX, currentY, { align: 'right' });
     currentY += 0.2;
 
-    // 6. Items List
+    // 6. Items List with Size Markers for Drinks
     doc.setFont('courier', 'normal');
     transaction.items.forEach(item => {
+      // ✅ NEW: Detect drink items with sizes and add size marker
+      let itemDisplay = item.menuItem.name;
+      if (item.menuItem.hasSizes && item.selectedSize) {
+        // Add size marker: (S), (M), (L)
+        const sizeMarker = item.selectedSize === 'Small' ? '(S)' : 
+                          item.selectedSize === 'Medium' ? '(M)' : 
+                          item.selectedSize === 'Large' ? '(L)' : '';
+        itemDisplay = `${item.menuItem.name} ${sizeMarker}`;
+      }
+      
       // Truncate long names
-      const name = item.menuItem.name.length > 20 ? item.menuItem.name.substring(0, 18) + '...' : item.menuItem.name;
+      if (itemDisplay.length > 20) {
+        itemDisplay = itemDisplay.substring(0, 18) + '...';
+      }
+      
       const price = item.menuItem.totalPrice.toFixed(2);
       const itemTotal = (item.menuItem.totalPrice * item.quantity).toFixed(2);
       
-      doc.text(name, marginX, currentY);
+      doc.text(itemDisplay, marginX, currentY);
       doc.text(String(item.quantity), width / 2 - 0.3, currentY, { align: 'center' });
       doc.text(price, width / 2 + 0.3, currentY, { align: 'center' });
       doc.text(itemTotal, width - marginX, currentY, { align: 'right' });

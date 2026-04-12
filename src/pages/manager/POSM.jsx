@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { getMenu, saveMenu, resetMenu, getServiceFees, saveServiceFees } from '../../services/mockDatabase';
+import { getMenu, saveMenu, resetMenu, getServiceFees, saveServiceFees, deleteMenuItemById, checkGlobalDuplicate } from '../../services/mockDatabase';
 
 const POSM = () => {
   const [menu, setMenu] = useState([]);
@@ -90,6 +90,24 @@ const POSM = () => {
     if (!isValidMenuItem(currentItem)) {
         alert('Please fill all required fields');
         return;
+    }
+
+    // ✅ GLOBAL DUPLICATE CHECK: Check entire database across all categories
+    const duplicate = await checkGlobalDuplicate(currentItem.name, currentItem.id);
+    
+    if (duplicate) {
+      const errorEvent = new CustomEvent('SHOW_TOAST', {
+        detail: {
+          id: crypto.randomUUID(),
+          message: `This item already exists in "${duplicate.category}". `,
+          type: 'error',
+          category: 'MENU_DUPLICATE',
+          timestamp: new Date(),
+          duration: 10000, // 10 seconds for error
+        }
+      });
+      window.dispatchEvent(errorEvent);
+      return;
     }
 
     const useSizePricing = currentItem.hasSizes && currentItem.sizes;
@@ -206,9 +224,15 @@ const POSM = () => {
     
     try {
       const deletedItemName = currentItem.name;
-      const updatedMenu = menu.filter(m => m.id !== currentItem.id);
-      await saveMenu(updatedMenu);
+      const deletedItemId = currentItem.id;
+      
+      // ✅ Remove from local state immediately for instant UI feedback
+      const updatedMenu = menu.filter(m => m.id !== deletedItemId);
       setMenu(updatedMenu);
+      
+      // ✅ DELETE from database (not UPSERT!)
+      await deleteMenuItemById(deletedItemId);
+      
       setShowDeleteModal(false);
       setCurrentItem({});
       
@@ -239,6 +263,9 @@ const POSM = () => {
         }
       });
       window.dispatchEvent(errorEvent);
+      
+      // ✅ Reload menu on error to restore deleted item
+      getMenu().then(setMenu);
     }
   };
 

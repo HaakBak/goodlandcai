@@ -6,6 +6,8 @@ scripts/
 Document/
 design/
 logs/
+diagrams/
+supabasedb/
 
 # Dependencies
 node_modules/

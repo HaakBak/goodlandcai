@@ -8,12 +8,13 @@
 
 /** 
  * Calculates the top selling items for a specific category based on transaction history.
+ * Returns items sorted by QUANTITY SOLD (volume), while maintaining revenue data internally.
  * @param {Array} transactions - List of transactions from DB
  * @param {String} category - Category to filter by (e.g., 'Beverages')
- * @returns {Array} - Sorted array of objects { name, count }
+ * @returns {Array} - Sorted array of objects { name, count (quantity), revenue, avgPrice }
  */
 export const calculateCategoryRanking = (transactions, category) => {
-  const itemCounts = {};
+  const itemStats = {};
 
   transactions.forEach(t => {
     if (t.items && Array.isArray(t.items)) {
@@ -21,23 +22,39 @@ export const calculateCategoryRanking = (transactions, category) => {
         // Filter by category
         if (orderItem.menuItem && orderItem.menuItem.category === category) {
           const name = orderItem.menuItem.name;
-          // Add quantity purchased
-          itemCounts[name] = (itemCounts[name] || 0) + orderItem.quantity;
+          const quantity = orderItem.quantity || 1;
+          const itemPrice = orderItem.menuItem.totalPrice || 0;
+          const itemRevenue = quantity * itemPrice;
+          
+          if (!itemStats[name]) {
+            itemStats[name] = {
+              name,
+              count: 0,         // Total quantity sold
+              revenue: 0,       // Total revenue from this item
+              transactions: 0,  // Number of times ordered
+            };
+          }
+          
+          itemStats[name].count += quantity;
+          itemStats[name].revenue += itemRevenue;
+          itemStats[name].transactions += 1;
         }
       });
     }
   });
 
-  // Convert to array and sort
-  const ranking = Object.keys(itemCounts).map(name => ({
-    name,
-    count: itemCounts[name]
+  // Convert to array and add average price
+  const ranking = Object.values(itemStats).map(item => ({
+    name: item.name,
+    count: item.count,
+    revenue: item.revenue,
+    avgPrice: item.transactions > 0 ? (item.revenue / item.count).toFixed(2) : 0,
   }));
 
-  // Sort descending by count
+  // Sort by COUNT (quantity sold) - business metric for volume
   ranking.sort((a, b) => b.count - a.count);
 
-  return ranking.slice(0, 5); // Top 5 items
+  return ranking.slice(0, 5); // Top 5 items by quantity sold
 };
 
 const parseCsvRow = (line) => {

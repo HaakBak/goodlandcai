@@ -781,6 +781,77 @@ export const resetMenu = async () => {
   return Promise.resolve();
 };
 
+/**
+ * Delete a menu item by ID (ACTUAL DELETE, not UPSERT)
+ * @param {string} itemId - Menu item UUID to delete
+ * @returns {Promise<void>}
+ */
+export const deleteMenuItemById = async (itemId) => {
+  const supabase = initSupabaseClient();
+
+  if (!supabase || !isOnline) {
+    console.log('[DB] 📋 deleteMenuItemById() — queued for offline sync (ID:', itemId, ')');
+    queueMutation({
+      type: 'DELETE',
+      table: 'menu',
+      id: itemId,
+    });
+    return Promise.resolve();
+  }
+
+  return retryWithBackoff(async () => {
+    const { error } = await supabase
+      .from('menu')
+      .delete()
+      .eq('id', itemId);
+
+    if (error) throw error;
+    console.log('[DB] ✅ deleteMenuItemById() — item', itemId, 'deleted from Supabase');
+  }).catch(error => {
+    console.error('[DB] ❌ deleteMenuItemById() failed:', error);
+    queueMutation({
+      type: 'DELETE',
+      table: 'menu',
+      id: itemId,
+    });
+  });
+};
+
+/**
+ * GLOBAL DUPLICATE CHECK: Search entire menu database for duplicate item names
+ * (Across all categories, not just the current category)
+ * 
+ * @param {string} itemName - The item name to check for duplicates
+ * @param {string} itemId - The current item ID (to exclude self when editing)
+ * @returns {Promise<Object|null>} - Returns { name, category } if duplicate found, null if none
+ */
+export const checkGlobalDuplicate = async (itemName, itemId = null) => {
+  try {
+    // First, check the local menu list
+    const allMenu = await getMenu();
+    
+    const duplicateItem = allMenu.find(m => 
+      m.id !== itemId && // Exclude current item if editing
+      m.name.toLowerCase().trim() === itemName.toLowerCase().trim()
+    );
+    
+    if (duplicateItem) {
+      console.log('[DB] 🔍 Global duplicate found in', duplicateItem.category, ':', duplicateItem.name);
+      return {
+        name: duplicateItem.name,
+        category: duplicateItem.category,
+      };
+    }
+    
+    console.log('[DB] ✅ No global duplicate found for:', itemName);
+    return null;
+  } catch (error) {
+    console.error('[DB] ❌ checkGlobalDuplicate() failed:', error);
+    // Return null on error to allow the save (fail-open approach)
+    return null;
+  }
+};
+
 // ─── INVENTORY ───────────────────────────────────────────────────────────
 
 // Helper: Convert item to database format - writes BOTH snake_case and camelCase columns
@@ -947,24 +1018,56 @@ export const addInventoryItem = async (item) => {
 export const updateInventoryItem = async (itemId, updates) => {
   const supabase = initSupabaseClient();
   
-  // Convert updates to database format (writes both snake_case and camelCase columns)
-  const dbUpdates = inventoryItemToDb({ id: itemId, ...updates });
+  // ✅ ENHANCED: Ensure openStock is tracked as cumulative consumption
+  // If not provided, preserve the existing value
+  const dbUpdates = inventoryItemToDb({ 
+    id: itemId, 
+    ...updates,
+    // Ensure both camelCase and snake_case versions are written
+    openStock: updates.openStock !== undefined ? updates.openStock : undefined,
+  });
   
   // Remove id from updates as it's the WHERE clause
   delete dbUpdates.id;
 
   if (!supabase || !isOnline) {
     console.log('[DB] 📥 updateInventoryItem() — queued for offline sync');
+    console.log('[DB]    Updates include:', { 
+      in_stock: dbUpdates.in_stock, 
+      openStock: dbUpdates.openStock,
+      timestamp: new Date().toISOString() 
+    });
     queueMutation({ type: 'UPDATE', table: 'inventory', id: itemId, data: dbUpdates });
     return Promise.resolve();
   }
 
   return retryWithBackoff(async () => {
+    console.log('[DB] 🔄 updateInventoryItem() - Sending to Supabase:', {
+      id: itemId,
+      in_stock: dbUpdates.in_stock,
+      openStock: dbUpdates.openStock,
+    });
+    
     const { error } = await supabase.from('inventory').update(dbUpdates).eq('id', itemId);
-    if (error) throw error;
-    console.log('[DB] ✅ updateInventoryItem() to Supabase — wrote to both column formats');
+    
+    if (error) {
+      // ✅ ENHANCED ERROR HANDLING: Distinguish between RLS and other errors
+      if (error.status === 403) {
+        console.error('[DB] 🔐 RLS POLICY VIOLATION: updateInventoryItem() blocked for user');
+        console.error('[DB]    User may lack UPDATE permissions (manager/admin required)');
+        const rlsError = new Error(`RLS Denied: ${error.message}`);
+        rlsError.status = 403;
+        throw rlsError;
+      }
+      throw error;
+    }
+    
+    console.log('[DB] ✅ updateInventoryItem() to Supabase — wrote to both column formats (including openStock)');
   }).catch(error => {
-    console.error('[DB] ❌ updateInventoryItem() failed:', error);
+    console.error('[DB] ❌ updateInventoryItem() failed:', error.message);
+    if (error.status === 403) {
+      console.error('[DB] ⚠️  This is likely an RLS policy failure. Check user permissions.');
+    }
     queueMutation({ type: 'UPDATE', table: 'inventory', id: itemId, data: dbUpdates });
   });
 };

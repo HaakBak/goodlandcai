@@ -2,6 +2,7 @@ import { addNotification, getNotifications } from './mockDatabase';
 
 const recentNotificationKeys = new Set();
 const buildNotificationKey = (note) => `${note.message}|${note.category}|${note.itemName}|${note.date}`;
+const DUPLICATE_CHECK_WINDOW_MS = 60000; // 60 second window to prevent same alert within 1 minute
 
 /**
  * Notification Service
@@ -11,6 +12,11 @@ const buildNotificationKey = (note) => `${note.message}|${note.category}|${note.
  * - MINIMAL: Item stock level has dropped to/below the alert threshold
  * - CRITICAL: Item stock has reached 0 (out of stock)
  * - EXPIRATION: Item has reached or exceeded expiration date
+ *
+ * DUPLICATE PREVENTION:
+ * - In-memory: Checks recentNotificationKeys (current session)
+ * - Database: Queries notifications table to prevent cross-session duplicates
+ * - 60-second window: Prevents same alert from appearing more than once per minute
  */
 
 /**
@@ -77,15 +83,71 @@ export const showNotification = (notificationData) => {
 };
 
 /**
+ * GLOBAL DUPLICATE PREVENTION
+ * Checks if identical notification already exists in database or active queue
+ * Prevents duplicate alerts across sessions and browser tabs
+ * 
+ * @param {string} category - Notification category (CRITICAL, MINIMAL, EXPIRATION)
+ * @param {string} itemName - Name of inventory item
+ * @returns {Promise<boolean>} - true if duplicate found, false if safe to dispatch
+ */
+export const checkDuplicateNotification = async (category, itemName) => {
+  try {
+    // 1. CHECK IN-MEMORY RECENT NOTIFICATIONS (current session)
+    const inMemoryKey = `${category}|${itemName}`;
+    if (recentNotificationKeys.has(inMemoryKey)) {
+      console.log(`🟡 [Duplicate Prevention] In-memory duplicate detected: ${category} - ${itemName}`);
+      return true; // Duplicate found
+    }
+
+    // 2. CHECK DATABASE FOR RECENT DUPLICATES (cross-session prevention)
+    try {
+      const allNotifications = await getNotifications();
+      const now = new Date();
+      const recentThreshold = new Date(now.getTime() - DUPLICATE_CHECK_WINDOW_MS); // Last 60 seconds
+
+      const existingAlert = allNotifications.find(note => {
+        if (!note.timestamp) return false;
+        const notificationTime = new Date(note.timestamp);
+        // Match: same category + same item + within 60 seconds
+        return (
+          note.category === category &&
+          note.itemName === itemName &&
+          notificationTime > recentThreshold
+        );
+      });
+
+      if (existingAlert) {
+        console.log(`🟡 [Duplicate Prevention] Database duplicate found: ${category} - ${itemName} (${new Date(existingAlert.timestamp).toLocaleTimeString()})`);
+        return true; // Duplicate found in database
+      }
+    } catch (dbError) {
+      console.warn(`[Notification] Could not query DB for duplicates (will proceed optimistically):`, dbError.message);
+      // Fail-open approach: if DB check fails, continue (don't block notifications)
+    }
+
+    // 3. NO DUPLICATES FOUND - Add to in-memory set and return false
+    recentNotificationKeys.add(inMemoryKey);
+    console.log(`✅ [Duplicate Prevention] No duplicates found for: ${category} - ${itemName}`);
+    return false; // Safe to dispatch
+  } catch (error) {
+    console.error(`[Notification] checkDuplicateNotification() error:`, error);
+    // Fail-open: return false to allow notification (don't block on error)
+    return false;
+  }
+};
+
+/**
  * Evaluate inventory item and create appropriate notification if needed
  * This function compares old and new stock levels to determine which alert to trigger
+ * ✅ ENHANCED: Now includes global duplicate prevention to avoid alert spam
  *
  * @param {Object} item - The inventory item to evaluate
  * @param {number} oldStock - The previous stock level
  * @param {string} itemName - Name of the item
- * @returns {Object|null} - The notification object if one was created, null otherwise
+ * @returns {Promise<Object|null>} - The notification object if one was created, null otherwise
  */
-export const evaluateInventoryAlert = (item, oldStock, itemName) => {
+export const evaluateInventoryAlert = async (item, oldStock, itemName) => {
   let notification = null;
 
   // DEBUG: Log the evaluation process
@@ -98,17 +160,23 @@ export const evaluateInventoryAlert = (item, oldStock, itemName) => {
 
   // CRITICAL: Check if stock reached 0 (out of stock)
   if (item.inStock === 0 && oldStock > 0) {
-    notification = showNotification({
-      message: `⚠️ CRITICAL: "${itemName}" is OUT OF STOCK!`,
-      type: 'warning',
-      category: 'CRITICAL',
-      itemName,
-      currentStock: 0,
-      severity: 'high',
-    });
+    // ✅ Check for duplicate before showing alert
+    const isDuplicate = await checkDuplicateNotification('CRITICAL', itemName);
+    if (!isDuplicate) {
+      notification = showNotification({
+        message: `⚠️ CRITICAL: "${itemName}" is OUT OF STOCK!`,
+        type: 'warning',
+        category: 'CRITICAL',
+        itemName,
+        currentStock: 0,
+        severity: 'high',
+      });
 
-    console.log('🚨 CRITICAL ALERT - Item out of stock:', itemName);
-    return notification;
+      console.log('🚨 CRITICAL ALERT - Item out of stock:', itemName);
+      return notification;
+    }
+    console.log('🔕 [Alert Suppressed] Duplicate CRITICAL alert for:', itemName);
+    return null;
   }
 
   // MINIMAL: Check if stock fell below or reached threshold (but not zero)
@@ -117,18 +185,24 @@ export const evaluateInventoryAlert = (item, oldStock, itemName) => {
     item.inStock <= item.lowStockThreshold &&
     oldStock > item.lowStockThreshold
   ) {
-    notification = showNotification({
-      message: `⚠️ MINIMAL ALERT: "${itemName}" stock is now ${item.inStock} (threshold: ${item.lowStockThreshold})`,
-      type: 'minimal',
-      category: 'MINIMAL',
-      itemName,
-      currentStock: item.inStock,
-      threshold: item.lowStockThreshold,
-      severity: 'medium',
-    });
+    // ✅ Check for duplicate before showing alert
+    const isDuplicate = await checkDuplicateNotification('MINIMAL', itemName);
+    if (!isDuplicate) {
+      notification = showNotification({
+        message: `⚠️ MINIMAL ALERT: "${itemName}" stock is now ${item.inStock} (threshold: ${item.lowStockThreshold})`,
+        type: 'minimal',
+        category: 'MINIMAL',
+        itemName,
+        currentStock: item.inStock,
+        threshold: item.lowStockThreshold,
+        severity: 'medium',
+      });
 
-    console.log('📉 MINIMAL ALERT - Low stock:', itemName, `(${item.inStock}/${item.lowStockThreshold})`);
-    return notification;
+      console.log('📉 MINIMAL ALERT - Low stock:', itemName, `(${item.inStock}/${item.lowStockThreshold})`);
+      return notification;
+    }
+    console.log('🔕 [Alert Suppressed] Duplicate MINIMAL alert for:', itemName);
+    return null;
   }
 
   // RECOVERY: Check if stock recovered from below threshold

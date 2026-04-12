@@ -134,6 +134,24 @@ const InventoryPage = () => {
     refreshData();
   }, []);
 
+  // ✅ NEW: Listen for inventory deduction events from POS (real-time refresh)
+  useEffect(() => {
+    const handleInventoryDeducted = (event) => {
+      console.log('[Inventory] 📡 Received INVENTORY_DEDUCTED event. Refreshing inventory view...', event.detail);
+      // Trigger a refresh to show updated stock levels
+      refreshData().catch(err => {
+        console.error('[Inventory] Could not refresh after deduction event:', err);
+      });
+    };
+
+    window.addEventListener('INVENTORY_DEDUCTED', handleInventoryDeducted);
+    
+    // Cleanup event listener on unmount
+    return () => {
+      window.removeEventListener('INVENTORY_DEDUCTED', handleInventoryDeducted);
+    };
+  }, []);
+
   const refreshData = async () => {
     setIsLoadingData(true);
     setDataLoadError(null);
@@ -684,9 +702,15 @@ const InventoryPage = () => {
         lowStockThreshold: newThreshold,
       };
 
-      // Use the evaluateInventoryAlert function to determine which alert (if any) to show
+      // ✅ ENHANCED: Use the evaluateInventoryAlert function with await
       // This handles CRITICAL (0 stock) and MINIMAL (below threshold) alerts
-      evaluateInventoryAlert(tempItem, oldStock, editFormData.name);
+      // Now includes duplicate prevention
+      try {
+        await evaluateInventoryAlert(tempItem, oldStock, editFormData.name);
+      } catch (alertErr) {
+        console.warn('[Inventory] Could not evaluate inventory alert:', alertErr);
+        // Continue with update even if alert fails
+      }
     } else {
       // Stock hasn't changed, but threshold might have
       // Log the change for debugging

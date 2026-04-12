@@ -27,6 +27,8 @@ import {
   getMenu,
   saveMenu,
   resetMenu,
+  deleteMenuItemById,
+  checkGlobalDuplicate,
   getInventory,
   saveInventory,
   addInventoryItem,
@@ -54,7 +56,7 @@ import {
 } from './databaseService';
 
 // ============================================================================
-// RE-EXPORT ALL 22 FUNCTIONS FOR BACKWARD COMPATIBILITY
+// RE-EXPORT ALL 23 FUNCTIONS FOR BACKWARD COMPATIBILITY
 // ============================================================================
 
 export {
@@ -66,6 +68,8 @@ export {
   getMenu,
   saveMenu,
   resetMenu,
+  deleteMenuItemById,
+  checkGlobalDuplicate,
   getInventory,
   saveInventory,
   addInventoryItem,

@@ -256,7 +256,7 @@ const Dashboard = () => {
     }
   }, [ingredientForecastResult, inventory]);
 
-  const categories = ['Beverages', 'Main Dish', 'Side Dish', 'Desserts'];
+  const categories = ['Beverages', 'Main Dishes', 'Side Dish', 'Desserts'];
 
   // Handle notification status update (mark as handled, unhandled, or archive)
   const handleNotificationAction = async (notificationId, newStatus) => {
@@ -324,8 +324,16 @@ const Dashboard = () => {
                                 <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#f0f0f0" />
                                 <XAxis type="number" hide />
                                 <YAxis type="category" dataKey="name" width={100} tick={{fontSize: 13, fill: '#666'}} />
-                                <Tooltip cursor={{fill: 'transparent'}} contentStyle={{ backgroundColor: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px' }} />
-                                <Bar dataKey="count" fill="#4ade80" radius={[0, 8, 8, 0]} barSize={24} label={{ position: 'right', fill: '#666', fontSize: 12, fontWeight: 'bold' }} />
+                                <Tooltip 
+                                  cursor={{fill: 'transparent'}} 
+                                  contentStyle={{ backgroundColor: '#fff', border: '1px solid #e0e0e0', borderRadius: '8px' }}
+                                  formatter={(value, name) => {
+                                    if (name === 'count') return [`${value} units`, 'Total Quantity Sold'];
+                                    if (name === 'revenue') return [`₱${value.toFixed(2)}`, 'Revenue (Reference)'];
+                                    return [value, name];
+                                  }}
+                                />
+                                <Bar dataKey="count" fill="#3b82f6" radius={[0, 8, 8, 0]} barSize={24} label={{ position: 'right', fill: '#666', fontSize: 12, fontWeight: 'bold', formatter: (value) => `${value} units` }} />
                             </BarChart>
                         </ResponsiveContainer>
                     </div>
