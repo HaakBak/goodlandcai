@@ -327,7 +327,8 @@ const EmployeeLogin = ({ onBack }) => {
           </div>
         </div>
 
-        <div className="text-center">
+        {/* SIGNUP TOGGLE - DISABLED (Uncomment to enable sign-up) */}
+        {/* <div className="text-center">
           <button 
             type="button"
             onClick={() => {
@@ -338,13 +339,14 @@ const EmployeeLogin = ({ onBack }) => {
           >
             {isSignup ? 'Already have an account? Login' : 'Don\'t have an account? Sign up'}
           </button>
-        </div>
+        </div> */}
 
         <button 
           type="submit"
           className="w-full py-3 bg-green-600 text-white rounded-lg text-xl font-bold hover:bg-green-700 shadow-lg hover:shadow-green-200 transition-all active:scale-[0.98]"
         >
-          {isSignup ? 'Create Account' : 'Login to POS'}
+          {/* {isSignup ? 'Create Account' : 'Login to POS'} */}
+          Login to POS
         </button>
 
         <button 
@@ -687,7 +689,8 @@ const ManagerLogin = ({ onBack }) => {
           </div>
         </div>
 
-        <div className="text-center">
+        {/* SIGNUP TOGGLE - DISABLED (Uncomment to enable sign-up) */}
+        {/* <div className="text-center">
           <button 
             type="button"
             onClick={() => {
@@ -698,13 +701,14 @@ const ManagerLogin = ({ onBack }) => {
           >
             {isSignup ? 'Already have an account? Login' : 'Don\'t have an account? Sign up'}
           </button>
-        </div>
+        </div> */}
 
         <button 
           type="submit"
           className="w-full py-5 bg-green-600 text-white rounded-xl text-xl font-bold hover:bg-green-700 shadow-lg hover:shadow-blue-200 transition-all active:scale-[0.98]"
         >
-          {isSignup ? 'Create Account' : 'Login to Dashboard'}
+          {/* {isSignup ? 'Create Account' : 'Login to Dashboard'} */}
+          Login to Dashboard
         </button>
 
         <button 
